@@ -23,8 +23,8 @@ _BASE = "https://m.blog.naver.com"
 _POST_LIST_PATH = "/api/blogs/{blog_id}/post-list"
 _POST_VIEW_PATH = "/PostView.naver"
 
-# 전체글(카테고리 0) 기준. post-list의 한 페이지 크기.
-_DEFAULT_CATEGORY_NO = 0
+# 전체글은 카테고리 0. post-list의 한 페이지 크기.
+_ALL_POSTS_CATEGORY_NO = 0
 _PAGE_SIZE = 30
 
 
@@ -95,8 +95,8 @@ class NaverBlogClient:
         url = str(self._client.build_request("GET", path, params=params).url)
         raise FetchError(url, attempts=self.max_retries, cause=last_exc)
 
-    def iter_post_meta(self, category_no: int = _DEFAULT_CATEGORY_NO) -> Iterator[PostMeta]:
-        """모든 글의 메타데이터를 최신→과거 순으로 순회한다.
+    def iter_post_meta(self) -> Iterator[PostMeta]:
+        """전체글의 메타데이터를 최신→과거 순으로 순회한다.
 
         post-list 응답의 ``totalCount``는 0으로 고정되어 신뢰할 수 없으므로,
         ``items``가 빈 페이지를 만날 때까지 페이지를 증가시킨다. 또한 API가
@@ -109,7 +109,7 @@ class NaverBlogClient:
             resp = self._get(
                 _POST_LIST_PATH.format(blog_id=self.blog_id),
                 params={
-                    "categoryNo": category_no,
+                    "categoryNo": _ALL_POSTS_CATEGORY_NO,
                     "itemCount": _PAGE_SIZE,
                     "page": page,
                 },
