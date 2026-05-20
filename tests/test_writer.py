@@ -6,7 +6,7 @@ from pathlib import Path
 
 from naver_blog_crawler.models import Post, PostMeta
 from naver_blog_crawler.writer import (
-    find_existing,
+    find_by_log_no,
     render_document,
     sanitize_title,
     target_path,
@@ -38,7 +38,7 @@ def test_sanitize_empty_falls_back() -> None:
 
 def test_target_path_format() -> None:
     path = target_path(Path("/out"), 7, _META)
-    assert path.name == "0007_2023-08-21_제목 테스트.txt"
+    assert path.name == "0007_2023-08-21_제목 테스트_123.txt"
 
 
 def test_render_document_has_header_and_body() -> None:
@@ -49,17 +49,25 @@ def test_render_document_has_header_and_body() -> None:
     assert "본문 내용" in doc
 
 
-def test_write_and_find_existing_roundtrip(tmp_path: Path) -> None:
+def test_write_and_find_by_log_no_roundtrip(tmp_path: Path) -> None:
     post = Post(meta=_META, url="https://m.blog.naver.com/x/123", body="본문")
     written = write_post(tmp_path, 3, post)
     assert written.exists()
-    assert find_existing(tmp_path, 3) == written
-    assert find_existing(tmp_path, 4) is None
+    # logNo로 순번·제목과 무관하게 찾을 수 있어야 한다.
+    assert find_by_log_no(tmp_path, 123) == written
+    assert find_by_log_no(tmp_path, 999) is None
+
+
+def test_find_by_log_no_ignores_seq_and_title(tmp_path: Path) -> None:
+    # 같은 글이 다른 순번·제목으로 저장돼 있어도 logNo로 찾는다.
+    saved = tmp_path / "0500_2023-08-21_옛 제목_123.txt"
+    saved.write_text("내용", encoding="utf-8")
+    assert find_by_log_no(tmp_path, 123) == saved
 
 
 def test_write_removes_stale_same_seq_file(tmp_path: Path) -> None:
     # 같은 순번의 옛 파일(제목이 바뀌기 전)을 미리 만들어 둔다.
-    stale = tmp_path / "0003_2023-08-21_옛 제목.txt"
+    stale = tmp_path / "0003_2023-08-21_옛 제목_123.txt"
     stale.write_text("옛 내용", encoding="utf-8")
 
     post = Post(meta=_META, url="https://m.blog.naver.com/x/123", body="본문")
