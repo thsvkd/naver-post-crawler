@@ -17,8 +17,10 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from .blog_id import resolve_blog_id
 from .client import NaverBlogClient
 from .crawler import Crawler, Outcome, PostResult
+from .errors import InvalidBlogReference
 
 console = Console()
 
@@ -31,7 +33,7 @@ _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("blog_id")
+@click.argument("blog")
 @click.option(
     "-o",
     "--out",
@@ -67,14 +69,22 @@ _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
     help="이미 저장된 글도 다시 받아 덮어쓴다.",
 )
 def main(
-    blog_id: str,
+    blog: str,
     out_dir: Path,
     delay: float,
     max_retries: int,
     limit: int | None,
     force: bool,
 ) -> None:
-    """네이버 블로그 BLOG_ID의 전체 글을 과거→최근 순으로 txt로 백업한다."""
+    """네이버 블로그의 전체 글을 과거→최근 순으로 txt로 백업한다.
+
+    BLOG 는 블로그 아이디(winter9377)나 블로그·포스트 URL 모두 가능하다.
+    """
+    try:
+        blog_id = resolve_blog_id(blog)
+    except InvalidBlogReference as exc:
+        raise click.BadParameter(str(exc), param_hint="BLOG") from exc
+
     console.print(f"[bold]네이버 블로그 백업[/bold] · blog_id=[cyan]{blog_id}[/cyan]")
 
     with NaverBlogClient(blog_id, delay=delay, max_retries=max_retries) as client:

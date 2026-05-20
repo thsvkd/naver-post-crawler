@@ -22,3 +22,7 @@ class FetchError(CrawlerError):
 
 class ParseError(CrawlerError):
     """HTML에서 기대한 구조(예: se-main-container)를 찾지 못했을 때 발생."""
+
+
+class InvalidBlogReference(CrawlerError):
+    """입력값에서 블로그 아이디를 인식하지 못했을 때 발생."""
