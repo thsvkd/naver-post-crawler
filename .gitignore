@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# 도구 캐시
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 크롤링 결과물
+/output/
+
+# 에이전트·도구 상태 (프로젝트 산출물 아님)
+.claude/
+.omc/
