@@ -1,7 +1,8 @@
 """추출한 글을 txt 파일로 저장한다.
 
-글 1개 → 파일 1개. 파일명은 ``0001_<날짜>_<제목>.txt`` 형식이며 점두 번호로
-과거→최근 순서를 보존한다.
+글 1개 → 파일 1개. 파일명은 ``0001_<날짜>_<제목>_<logNo>.txt`` 형식이다.
+점두 번호로 과거→최근 순서를 보존하고, 끝의 logNo로 글을 고유하게 식별해
+위치가 아닌 글 ID 기준으로 재개(증분 저장)할 수 있게 한다.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ _WHITESPACE = re.compile(r"\s+")
 
 # 대부분의 파일시스템은 파일명을 255바이트로 제한한다. 한글은 UTF-8에서
 # 글자당 3바이트라 글자 수로 자르면 한계를 넘을 수 있으므로 바이트로 자른다.
-# 번호·날짜 접두사와 확장자 몫을 빼고 제목에 허용할 바이트 예산.
+# 번호·날짜 접두사와 logNo·확장자 몫을 빼고 제목에 허용할 바이트 예산.
 _MAX_TITLE_BYTES = 200
 
 
@@ -42,13 +43,16 @@ def _truncate_bytes(text: str, max_bytes: int) -> str:
 
 def target_path(out_dir: Path, seq: int, meta: PostMeta) -> Path:
     """글 한 건이 저장될 경로를 만든다."""
-    name = f"{seq:04d}_{meta.date_str}_{sanitize_title(meta.title)}.txt"
+    name = f"{seq:04d}_{meta.date_str}_{sanitize_title(meta.title)}_{meta.log_no}.txt"
     return out_dir / name
 
 
-def find_existing(out_dir: Path, seq: int) -> Path | None:
-    """해당 순번으로 이미 저장된 파일이 있으면 반환한다(재개용)."""
-    matches = sorted(out_dir.glob(f"{seq:04d}_*.txt"))
+def find_by_log_no(out_dir: Path, log_no: int) -> Path | None:
+    """해당 logNo로 이미 저장된 파일이 있으면 반환한다(재개용).
+
+    파일명 끝에 logNo가 있으므로 순번·제목이 바뀌어도 글을 식별할 수 있다.
+    """
+    matches = sorted(out_dir.glob(f"*_{log_no}.txt"))
     return matches[0] if matches else None
 
 
@@ -62,7 +66,7 @@ def render_document(post: Post) -> str:
 def write_post(out_dir: Path, seq: int, post: Post) -> Path:
     """글 한 건을 파일로 저장하고 경로를 반환한다.
 
-    제목이 바뀌어 파일명이 달라진 경우 같은 순번의 옛 파일이 남아 중복되지
+    같은 순번의 옛 파일(제목 변경 전 또는 옛 파일명 형식)이 남아 중복되지
     않도록, 대상과 다른 ``{seq}_*`` 파일은 지운 뒤 기록한다.
     """
     out_dir.mkdir(parents=True, exist_ok=True)

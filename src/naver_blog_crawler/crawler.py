@@ -16,7 +16,7 @@ from .client import NaverBlogClient
 from .errors import CrawlerError
 from .models import Post, PostMeta
 from .parser import parse_post_body
-from .writer import find_existing, write_post
+from .writer import find_by_log_no, target_path, write_post
 
 
 class Outcome(Enum):
@@ -78,9 +78,12 @@ class Crawler:
 
     def _process_one(self, seq: int, total: int, meta: PostMeta) -> PostResult:
         if not self.force:
-            existing = find_existing(self.out_dir, seq)
+            existing = find_by_log_no(self.out_dir, meta.log_no)
             if existing is not None:
-                return PostResult(seq, total, meta, Outcome.SKIPPED_EXISTING, path=existing)
+                # 이미 받은 글이면 본문을 다시 받지 않는다. 글 삭제 등으로 순번이
+                # 밀려 파일명이 어긋났다면 현재 순번으로 이름만 갱신해 정렬을 맞춘다.
+                path = _realign(existing, target_path(self.out_dir, seq, meta))
+                return PostResult(seq, total, meta, Outcome.SKIPPED_EXISTING, path=path)
 
         try:
             html = self.client.fetch_post_html(meta.log_no)
@@ -95,3 +98,15 @@ class Crawler:
         post = Post(meta=meta, url=self.client.post_url(meta.log_no), body=body.text)
         path = write_post(self.out_dir, seq, post)
         return PostResult(seq, total, meta, Outcome.WRITTEN, path=path)
+
+
+def _realign(existing: Path, desired: Path) -> Path:
+    """기존 파일을 현재 순번에 맞는 이름으로 옮긴다.
+
+    이름이 이미 맞거나, 목표 이름이 다른 글에 의해 점유되어 있으면(드문 충돌)
+    옮기지 않고 기존 경로를 그대로 둔다.
+    """
+    if existing == desired or desired.exists():
+        return existing
+    existing.rename(desired)
+    return desired
