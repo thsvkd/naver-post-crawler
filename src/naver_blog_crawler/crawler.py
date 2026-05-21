@@ -13,10 +13,15 @@ from enum import Enum, auto
 from pathlib import Path
 
 from .client import NaverBlogClient
-from .errors import CrawlerError
+from .errors import CrawlerError, ParseError
+from .failures import FailureStore
 from .models import Post, PostMeta
-from .parser import parse_post_body
+from .parser import ParsedBody, parse_post_body
 from .writer import find_by_log_no, target_path, write_post
+
+# 본문 컨테이너가 없는 응답(스크랩 글 등에서 간헐 발생)은 재요청으로 대부분
+# 회복되므로, 한 글당 이 횟수만큼 다시 받아 파싱을 시도한다.
+_DEFAULT_PARSE_RETRIES = 3
 
 
 class Outcome(Enum):
@@ -25,6 +30,7 @@ class Outcome(Enum):
     WRITTEN = auto()
     SKIPPED_EXISTING = auto()
     SKIPPED_EMPTY = auto()
+    SKIPPED_FAILED = auto()
     FAILED = auto()
 
 
@@ -55,10 +61,22 @@ class CrawlPlan:
 class Crawler:
     """블로그 전체 글을 txt로 백업한다."""
 
-    def __init__(self, client: NaverBlogClient, out_dir: Path, *, force: bool = False) -> None:
+    def __init__(
+        self,
+        client: NaverBlogClient,
+        out_dir: Path,
+        failures: FailureStore,
+        *,
+        force: bool = False,
+        retry_failed: bool = False,
+        parse_retries: int = _DEFAULT_PARSE_RETRIES,
+    ) -> None:
         self.client = client
         self.out_dir = out_dir
+        self.failures = failures
         self.force = force
+        self.retry_failed = retry_failed
+        self._parse_retries = parse_retries
 
     def build_plan(self) -> CrawlPlan:
         """전체 메타데이터를 모아 빈 글을 거르고 과거→최근으로 정렬한다."""
@@ -85,11 +103,18 @@ class Crawler:
                 path = _realign(existing, target_path(self.out_dir, seq, meta))
                 return PostResult(seq, total, meta, Outcome.SKIPPED_EXISTING, path=path)
 
+            # 아직 저장 안 됐고 이전에 실패한 글이면, 재시도 선택에 따라 건너뛴다.
+            if not self.retry_failed and meta.log_no in self.failures:
+                return PostResult(seq, total, meta, Outcome.SKIPPED_FAILED)
+
         try:
-            html = self.client.fetch_post_html(meta.log_no)
-            body = parse_post_body(html)
+            body = self._fetch_and_parse(meta.log_no)
         except CrawlerError as exc:
+            self.failures.record(meta, str(exc))
             return PostResult(seq, total, meta, Outcome.FAILED, error=str(exc))
+
+        # 성공적으로 받았으면(빈 글 포함) 과거 실패 기록을 해소한다.
+        self.failures.clear(meta.log_no)
 
         # 본문 모듈이 없으면(예: 인용/위젯뿐) 빈 글로 보고 건너뛴다.
         if not body.has_content:
@@ -98,6 +123,18 @@ class Crawler:
         post = Post(meta=meta, url=self.client.post_url(meta.log_no), body=body.text)
         path = write_post(self.out_dir, seq, post)
         return PostResult(seq, total, meta, Outcome.WRITTEN, path=path)
+
+    def _fetch_and_parse(self, log_no: int) -> ParsedBody:
+        """본문을 받아 파싱한다. 컨테이너 누락(간헐 오류)은 재요청으로 재시도한다."""
+        last_exc: ParseError | None = None
+        for _attempt in range(self._parse_retries):
+            html = self.client.fetch_post_html(log_no)
+            try:
+                return parse_post_body(html)
+            except ParseError as exc:
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
 
 
 def _realign(existing: Path, desired: Path) -> Path:

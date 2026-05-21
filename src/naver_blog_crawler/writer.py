@@ -15,6 +15,8 @@ from .models import Post, PostMeta
 # 파일명에 쓸 수 없는 문자(윈도/리눅스 공통)와 제어 문자.
 _ILLEGAL_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _WHITESPACE = re.compile(r"\s+")
+# 파일명 끝의 ``_<logNo>.txt``에서 logNo를 뽑는 패턴.
+_LOG_NO_RE = re.compile(r"_(\d+)\.txt$")
 
 # 대부분의 파일시스템은 파일명을 255바이트로 제한한다. 한글은 UTF-8에서
 # 글자당 3바이트라 글자 수로 자르면 한계를 넘을 수 있으므로 바이트로 자른다.
@@ -54,6 +56,18 @@ def find_by_log_no(out_dir: Path, log_no: int) -> Path | None:
     """
     matches = sorted(out_dir.glob(f"*_{log_no}.txt"))
     return matches[0] if matches else None
+
+
+def saved_log_nos(out_dir: Path) -> set[int]:
+    """이미 저장된 파일들의 logNo 집합(분류·증분 판정을 한 번에 처리)."""
+    result: set[int] = set()
+    if not out_dir.exists():
+        return result
+    for path in out_dir.glob("*.txt"):
+        match = _LOG_NO_RE.search(path.name)
+        if match:
+            result.add(int(match.group(1)))
+    return result
 
 
 def render_document(post: Post) -> str:
