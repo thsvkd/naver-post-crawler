@@ -133,8 +133,18 @@ def main(
         pending_failed = _print_plan(plan, out_dir, failures, force=force)
         crawler.retry_failed = _decide_retry(retry_flag, pending_failed, force=force)
 
-        counts, failed_results = _run(crawler, plan)
-        failures.save()
+        # 중단(Ctrl-C) 시에도 진행분 실패 기록을 반드시 저장한다.
+        try:
+            counts, failed_results, interrupted = _run(crawler, plan)
+        finally:
+            failures.save()
+
+    if interrupted:
+        logger.warning("사용자 중단(KeyboardInterrupt) — 진행분까지 저장")
+        console.print(
+            "[yellow]중단됨[/yellow] — 지금까지 받은 글은 저장되었습니다. "
+            "다시 실행하면 이어서 진행합니다."
+        )
 
     logger.info(
         "백업 종료: 저장 %d, 기존 %d, 빈 글 %d, 이전 실패 %d, 실패 %d",
@@ -183,11 +193,15 @@ def _decide_retry(retry_flag: bool | None, pending_failed: int, *, force: bool) 
     )
 
 
-def _run(crawler: Crawler, plan: CrawlPlan) -> tuple[Counter[Outcome], list[PostResult]]:
-    """진행바와 최근 결과 로그가 함께 갱신되는 Live 화면으로 백업을 진행한다."""
+def _run(crawler: Crawler, plan: CrawlPlan) -> tuple[Counter[Outcome], list[PostResult], bool]:
+    """진행바와 최근 결과 로그가 함께 갱신되는 Live 화면으로 백업을 진행한다.
+
+    Ctrl-C로 중단하면 거기까지의 결과를 반환하고 중단 여부를 함께 알린다.
+    """
     counts: Counter[Outcome] = Counter()
     failed_results: list[PostResult] = []
     recent: deque[Text] = deque(maxlen=_RECENT_LINES)
+    interrupted = False
 
     progress = _make_progress()
     task = progress.add_task("백업 진행", total=plan.total)
@@ -205,16 +219,19 @@ def _run(crawler: Crawler, plan: CrawlPlan) -> tuple[Counter[Outcome], list[Post
         refresh_per_second=_REFRESH_PER_SECOND,
         vertical_overflow="crop",
     ) as live:
-        for result in crawler.run(plan):
-            counts[result.outcome] += 1
-            if result.outcome is Outcome.FAILED:
-                failed_results.append(result)
-            progress.advance(task)
-            recent.append(_recent_line(result))
-            # refresh는 타이머에 맡긴다(여기서 강제하면 프레임이 겹쳐 깜빡인다).
-            live.update(render())
+        try:
+            for result in crawler.run(plan):
+                counts[result.outcome] += 1
+                if result.outcome is Outcome.FAILED:
+                    failed_results.append(result)
+                progress.advance(task)
+                recent.append(_recent_line(result))
+                # refresh는 타이머에 맡긴다(여기서 강제하면 프레임이 겹쳐 깜빡인다).
+                live.update(render())
+        except KeyboardInterrupt:
+            interrupted = True
 
-    return counts, failed_results
+    return counts, failed_results, interrupted
 
 
 def _make_progress() -> Progress:

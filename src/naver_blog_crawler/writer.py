@@ -81,12 +81,15 @@ def write_post(out_dir: Path, seq: int, post: Post) -> Path:
     """글 한 건을 파일로 저장하고 경로를 반환한다.
 
     같은 순번의 옛 파일(제목 변경 전 또는 옛 파일명 형식)이 남아 중복되지
-    않도록, 대상과 다른 ``{seq}_*`` 파일은 지운 뒤 기록한다.
+    않도록, 대상과 다른 ``{seq}_*`` 파일은 지운 뒤 기록한다. 쓰기 도중 중단돼도
+    잘린 파일이 남지 않도록 임시 파일에 쓴 뒤 원자적으로 교체한다.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     path = target_path(out_dir, seq, post.meta)
     for stale in out_dir.glob(f"{seq:04d}_*.txt"):
         if stale != path:
             stale.unlink()
-    path.write_text(render_document(post), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.part")
+    tmp.write_text(render_document(post), encoding="utf-8")
+    tmp.replace(path)  # 원자적 교체: 완성된 파일만 노출된다.
     return path
