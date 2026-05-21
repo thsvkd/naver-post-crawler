@@ -58,6 +58,14 @@ def test_write_and_find_by_log_no_roundtrip(tmp_path: Path) -> None:
     assert find_by_log_no(tmp_path, 999) is None
 
 
+def test_write_leaves_no_temp_file(tmp_path: Path) -> None:
+    post = Post(meta=_META, url="https://m.blog.naver.com/x/123", body="본문")
+    write_post(tmp_path, 3, post)
+    # 원자적 교체 후 임시(.part) 파일이 남지 않아야 한다.
+    assert list(tmp_path.glob("*.part")) == []
+    assert "본문" in (tmp_path / "0003_2023-08-21_제목 테스트_123.txt").read_text(encoding="utf-8")
+
+
 def test_find_by_log_no_ignores_seq_and_title(tmp_path: Path) -> None:
     # 같은 글이 다른 순번·제목으로 저장돼 있어도 logNo로 찾는다.
     saved = tmp_path / "0500_2023-08-21_옛 제목_123.txt"
