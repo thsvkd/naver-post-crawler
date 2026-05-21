@@ -25,6 +25,9 @@
   (`--retry-failed`/`--no-retry-failed`로 강제 가능, 비대화형 환경은 건너뜀). 재시도에 성공하면
   기록은 자동으로 사라집니다.
 - **인터페이스**: 실행 중에는 진행바와 최근 처리 결과 로그가 함께 갱신되는 화면을 표시합니다.
+- **로깅**: 진행 화면과 충돌하지 않도록 콘솔이 아닌 회전 파일(`logs/naver-blog-crawler.log`)에
+  요청 재시도·본문 재요청·실패·결과 요약을 기록합니다. `--log-level`(기본 `INFO`)로 상세도를,
+  `--log-dir`로 위치를 조정합니다.
 
 ## 설치
 
@@ -58,6 +61,8 @@ uv run naver-blog-crawler https://blog.naver.com/winter9377/223189475037
 | `--limit` | (전체) | 처리할 글 수 제한(과거부터). 시험용 |
 | `--retry-failed` / `--no-retry-failed` | (대화형 질문) | 이전에 실패한 글 재시도 여부 강제 |
 | `--force` | off | 이미 저장된 글도 다시 받아 덮어쓰기 |
+| `--log-dir` | `logs` | 로그 파일을 저장할 디렉토리 |
+| `--log-level` | `INFO` | 파일 로그 레벨 (DEBUG/INFO/WARNING/ERROR) |
 
 ### 출력 예시
 
