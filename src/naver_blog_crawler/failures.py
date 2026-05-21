@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
 from .errors import CrawlerError
 from .models import KST, PostMeta
+
+logger = logging.getLogger(__name__)
 
 _STORE_VERSION = 1
 _FILENAME = ".failures.json"
@@ -92,3 +95,4 @@ class FailureStore:
             json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        logger.info("실패 기록 %d건 저장: %s", len(self._records), self.path)

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, deque
 from pathlib import Path
 
@@ -30,9 +31,11 @@ from .client import NaverBlogClient
 from .crawler import Crawler, CrawlPlan, Outcome, PostResult
 from .errors import InvalidBlogReference
 from .failures import FailureStore
+from .log import setup_logging
 from .writer import saved_log_nos
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # 결과 종류별 (라벨, 색, 아이콘).
 _OUTCOME_STYLE: dict[Outcome, tuple[str, str, str]] = {
@@ -77,6 +80,20 @@ _REFRESH_PER_SECOND = 8
     help="이전에 실패한 글 재시도 여부. 미지정 시 대화형으로 묻는다.",
 )
 @click.option("--force", is_flag=True, help="이미 저장된 글도 다시 받아 덮어쓴다.")
+@click.option(
+    "--log-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path("logs"),
+    show_default=True,
+    help="로그 파일을 저장할 디렉토리.",
+)
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    default="INFO",
+    show_default=True,
+    help="파일 로그 레벨.",
+)
 def main(
     blog: str,
     out_dir: Path,
@@ -85,17 +102,23 @@ def main(
     limit: int | None,
     retry_flag: bool | None,
     force: bool,
+    log_dir: Path,
+    log_level: str,
 ) -> None:
     """네이버 블로그의 전체 글을 과거→최근 순으로 txt로 백업한다.
 
     BLOG 는 블로그 아이디(winter9377)나 블로그·포스트 URL 모두 가능하다.
     """
+    log_file = setup_logging(log_dir, level=logging.getLevelNamesMapping()[log_level.upper()])
+
     try:
         blog_id = resolve_blog_id(blog)
     except InvalidBlogReference as exc:
         raise click.BadParameter(str(exc), param_hint="BLOG") from exc
 
+    logger.info("백업 시작: blog_id=%s out=%s force=%s", blog_id, out_dir, force)
     console.print(f"[bold]네이버 블로그 백업[/bold] · blog_id=[cyan]{blog_id}[/cyan]")
+    console.print(f"[dim]로그: {log_file}[/dim]")
 
     with NaverBlogClient(blog_id, delay=delay, max_retries=max_retries) as client:
         failures = FailureStore.load(out_dir)
@@ -113,6 +136,14 @@ def main(
         counts, failed_results = _run(crawler, plan)
         failures.save()
 
+    logger.info(
+        "백업 종료: 저장 %d, 기존 %d, 빈 글 %d, 이전 실패 %d, 실패 %d",
+        counts.get(Outcome.WRITTEN, 0),
+        counts.get(Outcome.SKIPPED_EXISTING, 0),
+        counts.get(Outcome.SKIPPED_EMPTY, 0),
+        counts.get(Outcome.SKIPPED_FAILED, 0),
+        counts.get(Outcome.FAILED, 0),
+    )
     _print_summary(counts, out_dir)
     _print_failures(failed_results)
 

@@ -5,6 +5,7 @@ post-list JSON API로 글 목록을, PostView HTML로 본문을 가져온다.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Iterator
 
@@ -12,6 +13,8 @@ import httpx
 
 from .errors import FetchError, ParseError
 from .models import PostMeta
+
+logger = logging.getLogger(__name__)
 
 _MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) "
@@ -91,8 +94,16 @@ class NaverBlogClient:
                 last_exc = exc
             # 마지막 시도가 아니면 점증 대기 후 재시도한다.
             if attempt < self.max_retries - 1:
+                logger.warning(
+                    "요청 실패, 재시도 %d/%d: %s (%r)",
+                    attempt + 1,
+                    self.max_retries,
+                    path,
+                    last_exc,
+                )
                 time.sleep(self.delay * (2**attempt))
         url = str(self._client.build_request("GET", path, params=params).url)
+        logger.error("요청 최종 실패(%d회): %s", self.max_retries, url)
         raise FetchError(url, attempts=self.max_retries, cause=last_exc)
 
     def iter_post_meta(self) -> Iterator[PostMeta]:
@@ -115,6 +126,7 @@ class NaverBlogClient:
                 },
             )
             items = resp.json().get("result", {}).get("items", [])
+            logger.debug("글 목록 %d페이지: %d건", page, len(items))
             if not items:
                 return
             new_count = 0
