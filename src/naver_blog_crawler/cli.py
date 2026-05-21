@@ -42,8 +42,12 @@ _OUTCOME_STYLE: dict[Outcome, tuple[str, str, str]] = {
     Outcome.SKIPPED_FAILED: ("건너뜀(이전 실패)", "magenta", "•"),
     Outcome.FAILED: ("실패", "red", "✗"),
 }
-# Live 화면 하단에 보여줄 최근 결과 줄 수.
-_RECENT_LINES = 10
+# Live 화면 하단에 보여줄 최근 결과 줄 수(고정 높이로 유지해 깜빡임을 줄인다).
+_RECENT_LINES = 8
+# rich Live는 매 refresh마다 영역 전체를 지우고 다시 그리므로, 화면 영역이
+# 클수록·빠를수록 깜빡인다. 작은 영역에서 부드럽게 도는 Progress 기본값과
+# 같은 수준으로 맞춘다.
+_REFRESH_PER_SECOND = 8
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
@@ -158,16 +162,25 @@ def _run(crawler: Crawler, plan: CrawlPlan) -> tuple[Counter[Outcome], list[Post
     task = progress.add_task("백업 진행", total=plan.total)
 
     def render() -> Group:
-        log = Text("\n").join(recent) if recent else Text("대기 중…", style="dim")
+        # 항상 _RECENT_LINES 줄로 채워 영역 높이를 고정한다(높이 변동 잔상 방지).
+        blank = Text("", style="dim")
+        lines = [blank] * (_RECENT_LINES - len(recent)) + list(recent)
+        log = Text("\n").join(lines)
         return Group(progress, Panel(log, title="최근 결과", border_style="dim"))
 
-    with Live(render(), console=console, refresh_per_second=12) as live:
+    with Live(
+        render(),
+        console=console,
+        refresh_per_second=_REFRESH_PER_SECOND,
+        vertical_overflow="crop",
+    ) as live:
         for result in crawler.run(plan):
             counts[result.outcome] += 1
             if result.outcome is Outcome.FAILED:
                 failed_results.append(result)
             progress.advance(task)
             recent.append(_recent_line(result))
+            # refresh는 타이머에 맡긴다(여기서 강제하면 프레임이 겹쳐 깜빡인다).
             live.update(render())
 
     return counts, failed_results
