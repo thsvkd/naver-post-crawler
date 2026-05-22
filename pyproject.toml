@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["flet>=0.28"]
+gui = ["flet>=0.85"]
 
 [project.scripts]
 naver-blog-crawler = "naver_blog_crawler.cli:main"
@@ -41,3 +41,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.flet.app]
+# src-layout이므로 flet build가 src/ 아래에서 진입 모듈을 찾도록 지정한다.
+# (app.path는 CLI 옵션이 없어 pyproject.toml이 유일한 설정 위치다.)
+module = "naver_blog_crawler.gui"
+path = "src"
