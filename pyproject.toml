@@ -14,8 +14,12 @@ dependencies = [
     "selectolax>=0.4.9",
 ]
 
+[project.optional-dependencies]
+gui = ["flet>=0.28"]
+
 [project.scripts]
 naver-blog-crawler = "naver_blog_crawler.cli:main"
+naver-blog-crawler-gui = "naver_blog_crawler.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]
