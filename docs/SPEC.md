@@ -118,7 +118,17 @@ HTML 파싱만으로 충분하다.
   (`logs/naver-blog-crawler.log`)에 기록한다. 요청 재시도, 본문 재요청, 실패,
   목록 수집·종료 요약을 남기며, 레벨(`--log-level`)과 위치(`--log-dir`)를 조정할 수 있다.
 
-## 7. 기술 스택
+## 7. GUI (선택)
+
+CLI와 동일한 코어(`Crawler` 제너레이터, `FailureStore`, `resolve_blog_id`)를
+재사용하는 Flet 기반 Windows 데스크톱 앱. 크롤링은 백그라운드 스레드에서 돌리고
+진행바·집계·최근 결과 로그를 실시간 갱신한다. 블로그 입력, 시작/중단, 출력 폴더
+선택·열기, 이전 실패 재시도 체크박스, 고급 옵션(딜레이·재시도·force·로그 레벨)을
+제공한다. Flet은 선택 의존성(`gui` extra)이며, 개발은 `uv run naver-blog-crawler-gui`,
+Windows 빌드는 `scripts/build-windows.ps1`로 한다.
+
+## 8. 기술 스택
 
 - Python (uv / pyproject 기반)
 - `httpx`(HTTP), `selectolax`(HTML 파싱), `click`(CLI), `rich`(진행 표시)
+- `flet`(GUI, 선택 의존성)

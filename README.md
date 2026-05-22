@@ -90,6 +90,22 @@ output/
 ...
 ```
 
+## GUI (Windows 데스크톱)
+
+CLI와 동일한 코어를 쓰는 Flet 기반 데스크톱 앱입니다. 블로그 입력·시작/중단·실시간
+진행률·최근 결과 로그·완료 요약을 제공하고, 출력 폴더 선택/열기, 이전 실패 재시도
+체크박스, 고급 옵션(딜레이·재시도·force·로그 레벨)을 포함합니다.
+
+개발 중 실행(소스):
+
+```bash
+uv sync --extra gui
+uv run naver-blog-crawler-gui
+```
+
+Windows 실행파일 빌드는 **Windows에서** `scripts/build-windows.ps1`로 진행합니다
+(Flutter SDK + Visual Studio C++ 빌드 도구 필요). 자세한 사전 준비는 스크립트 주석 참고.
+
 ## 개발
 
 ```bash
