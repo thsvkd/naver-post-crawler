@@ -23,10 +23,10 @@ def main() -> int:
     require_uv()
     args = sys.argv[1:]
 
-    # 인자 없이 실행하거나 --gui면 GUI 창 모드. flet은 gui extra라 --extra gui로 띄운다.
+    # 인자 없이 실행하거나 --gui면 GUI 창 모드.
     # (GUI에서는 블로그 아이디를 입력칸에 적으므로 인자가 필요 없다.)
     if not args or "--gui" in args:
-        return run(["uv", "run", "--extra", "gui", "naver-blog-crawler-gui"])
+        return run(["uv", "run", "naver-blog-crawler-gui"])
 
     # 인자가 있으면 CLI 모드 — BLOG(블로그 아이디/URL)와 옵션을 그대로 전달한다.
     return run(["uv", "run", "naver-blog-crawler", *args])

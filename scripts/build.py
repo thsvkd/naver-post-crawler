@@ -212,11 +212,20 @@ def main() -> int:
     else:
         fail(f"지원하지 않는 OS입니다: {system}")
 
-    info("의존성 동기화 (gui 포함)")
-    check(["uv", "sync", "--extra", "gui"])
+    info("의존성 동기화 (uv sync)")
+    check(["uv", "sync"])
+
+    # flet build의 진행 표시(rich)는 체크마크 등 이모지를 stdout에 쓰는데, 한국어
+    # Windows 콘솔 기본 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로
+    # 빌드가 죽는다. 자식 Python을 UTF-8 모드로 강제해 stdout 인코딩을 utf-8로
+    # 바꿔 회피한다(다른 OS에선 무해).
+    build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     info(f"flet build {target}")
-    check(["uv", "run", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG])
+    check(
+        ["uv", "run", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG],
+        env=build_env,
+    )
 
     verify_artifact(target)
     return 0
