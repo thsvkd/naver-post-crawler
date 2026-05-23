@@ -18,6 +18,10 @@ __pycache__/
 # Flet/빌드 산출물
 /build/
 
+# flet pack(단일 실행파일) 산출물과 PyInstaller 작업 디렉터리(build.py --pack)
+/dist/
+/.pack-build/
+
 # flet 빌드 템플릿 패치 작업 디렉터리(build.py가 매 빌드 재생성)
 /.flet-template/
 
