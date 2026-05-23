@@ -373,22 +373,25 @@ class CrawlerGUI:
         self._status_dirty.set()
 
     def _ui_ticker(self) -> None:
-        """0.2초마다 누적된 상태 변경을 한 번에 UI에 반영하는 렌더 루프.
+        """상태 변경을 즉시 반영하고, 직후의 연속 변경만 묶는 렌더 루프.
 
         변경이 없으면 :attr:`_status_dirty`에서 블록해 유휴 시 깨어나지 않는다.
-        변경이 들어오면 dirty를 먼저 내린 뒤 0.2초를 기다려 그 사이의 연속 변경을
-        모아(코얼레싱) 최신 값만 반영한다. dirty를 sleep 전에 내려야, 대기 중 들어온
-        변경이 dirty를 다시 세워 다음 루프에서 누락 없이 반영된다. 데몬 스레드이므로
-        창이 닫히면 함께 종료되며, 종료 직전 마지막 상태를 한 번 더 반영(drain)해
-        완료·중단 문구가 누락되지 않게 한다.
+        변경이 들어오면 dirty를 내린 뒤 **곧바로 반영**(leading edge)하고, 그 다음
+        0.2초를 쉬어 그 창 안의 추가 변경을 모은다(throttle). 이렇게 해야 시작 버튼
+        검증 에러처럼 단발성 변경이 0.2초 지연 없이 즉시 보이고, 수집 루프처럼 초당
+        수십~수백 번 들어오는 변경은 0.2초마다 최신 값 하나로 합쳐진다. dirty를
+        flush·sleep 전에 내려야, 쉬는 동안 들어온 변경이 dirty를 다시 세워 다음
+        루프에서 누락 없이 반영된다. 데몬 스레드이므로 창이 닫히면 함께 종료되며,
+        종료 직전 마지막 상태를 한 번 더 반영(drain)해 완료·중단 문구가 누락되지
+        않게 한다.
         """
         while not self._app_closing.is_set():
             self._status_dirty.wait()
             if self._app_closing.is_set():
                 break
             self._status_dirty.clear()
-            time.sleep(_UI_TICK_SECONDS)
             self._flush_status()
+            time.sleep(_UI_TICK_SECONDS)
         self._flush_status()
 
     def _flush_status(self) -> None:

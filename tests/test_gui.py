@@ -105,6 +105,35 @@ def test_ui_ticker_applies_latest_and_terminates(monkeypatch: pytest.MonkeyPatch
     assert not thread.is_alive()
 
 
+def test_ui_ticker_flushes_before_throttle_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 단발 상태 변경은 0.2초 throttle을 기다리지 않고 즉시 반영돼야 한다(leading edge).
+    # 실제 sleep 없이 flush와 sleep의 호출 순서만 결정적으로 검증한다.
+    gui = _bare_gui()
+    events: list[str] = []
+
+    def fake_sleep(_seconds: float) -> None:
+        events.append("sleep")
+        gui._app_closing.set()  # 한 바퀴 돈 뒤 루프를 끝낸다
+
+    monkeypatch.setattr(gui_mod.time, "sleep", fake_sleep)
+    original_flush = gui._flush_status
+
+    def tracking_flush() -> None:
+        events.append("flush")
+        original_flush()
+
+    monkeypatch.setattr(gui, "_flush_status", tracking_flush)
+
+    gui._set_status("즉시 반영", "red")
+    gui._ui_ticker()
+
+    # flush가 throttle sleep보다 먼저 일어나고, 값도 곧바로 반영된다.
+    assert events[0] == "flush"
+    assert "sleep" in events
+    assert events.index("flush") < events.index("sleep")
+    assert gui.status.value == "즉시 반영"  # type: ignore[attr-defined]
+
+
 def test_ui_ticker_drains_final_status_on_shutdown() -> None:
     gui = _bare_gui()
     gui._set_status("완료", "green")
