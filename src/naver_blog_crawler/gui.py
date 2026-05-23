@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -42,6 +43,9 @@ _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
 }
 # 로그 ListView에 유지할 최대 줄 수(메모리 보호).
 _MAX_LOG_ROWS = 200
+# 상태 텍스트 렌더 틱 주기(초). 수집 카운트처럼 빠르게 바뀌는 값의 변경을 이 창
+# 안에서 한 번으로 합쳐 화면이 밀리지 않게 한다.
+_UI_TICK_SECONDS = 0.2
 
 
 class CrawlerGUI:
@@ -50,7 +54,20 @@ class CrawlerGUI:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self._stop = threading.Event()
+        # 상태 텍스트는 백그라운드 스레드가 값만 기록(이벤트)하고, 렌더 틱이
+        # 0.2초마다 일괄 반영한다. _status_lock으로 메시지·색을 한 쌍으로 보호하고,
+        # _status_dirty로 변경을 알린다.
+        self._status_lock = threading.Lock()
+        self._status_dirty = threading.Event()
+        self._app_closing = threading.Event()
+        self._status_msg = "대기 중"
+        self._status_color: str | None = None
         self._build()
+        # 데몬 스레드라 창을 닫으면 함께 종료된다.
+        self._render_thread = threading.Thread(
+            target=self._ui_ticker, name="gui-render-tick", daemon=True
+        )
+        self._render_thread.start()
 
     # -- UI 구성 ---------------------------------------------------------
     def _build(self) -> None:
@@ -62,6 +79,7 @@ class CrawlerGUI:
         page.window.height = 720
         page.window.min_width = 560
         page.window.min_height = 520
+        page.on_close = self._on_close
 
         # 포커스 전에는 label("블로그 아이디 또는 URL")이, 포커스하면 hint(예시 형식)가
         # 보인다. 둘 다 입력값과 구분되도록 연하게 표시하고, hint는 특정 블로그가 아닌
@@ -83,7 +101,9 @@ class CrawlerGUI:
         )
         self.file_picker = ft.FilePicker()
         page.services.append(self.file_picker)
-        browse_btn = ft.Button("찾아보기", icon=ft.Icons.FOLDER_OPEN, on_click=self._pick_folder)
+        self.browse_btn = ft.Button(
+            "찾아보기", icon=ft.Icons.FOLDER_OPEN, on_click=self._pick_folder
+        )
 
         self.retry_cb = ft.Checkbox(label="이전 실패 글 다시 시도", value=True, visible=False)
 
@@ -136,7 +156,7 @@ class CrawlerGUI:
                     ft.Text("네이버 블로그 크롤러", size=22, weight=ft.FontWeight.BOLD),
                     self.blog_field,
                     ft.Row(
-                        [self.out_field, browse_btn],
+                        [self.out_field, self.browse_btn],
                         vertical_alignment=ft.CrossAxisAlignment.END,
                     ),
                     self.retry_cb,
@@ -178,6 +198,11 @@ class CrawlerGUI:
             subprocess.run(["open", str(path)], check=False)
         else:
             subprocess.run(["xdg-open", str(path)], check=False)
+
+    def _on_close(self, _e: ft.ControlEvent) -> None:
+        """창이 닫히면 렌더 틱 스레드를 깨워 깔끔히 종료시킨다."""
+        self._app_closing.set()
+        self._status_dirty.set()
 
     def _refresh_failures(self) -> None:
         """현재 출력 폴더의 이전 실패 건수에 따라 재시도 체크박스를 보인다."""
@@ -330,15 +355,57 @@ class CrawlerGUI:
     def _set_running(self, running: bool) -> None:
         self.start_btn.disabled = running
         self.stop_btn.disabled = not running
-        for control in (self.blog_field, self.out_field, self.force_cb):
+        # 실행 중에는 입력·출력 폴더 선택을 잠가 진행 중인 작업과 어긋나지 않게 한다.
+        for control in (self.blog_field, self.out_field, self.browse_btn, self.force_cb):
             control.disabled = running
         self.page.update()
 
     def _set_status(self, message: str, color: str | None = None) -> None:
+        """상태 텍스트 갱신을 예약한다.
+
+        실제 반영은 렌더 틱(:meth:`_ui_ticker`, 0.2초)에서 일괄 처리한다. 수집
+        루프처럼 초당 수십~수백 번 호출돼도 화면 갱신은 0.2초마다 한 번으로
+        합쳐져(최신 값만 반영) 화면이 밀리지 않는다.
+        """
+        with self._status_lock:
+            self._status_msg = message
+            self._status_color = color
+        self._status_dirty.set()
+
+    def _ui_ticker(self) -> None:
+        """0.2초마다 누적된 상태 변경을 한 번에 UI에 반영하는 렌더 루프.
+
+        변경이 없으면 :attr:`_status_dirty`에서 블록해 유휴 시 깨어나지 않는다.
+        변경이 들어오면 dirty를 먼저 내린 뒤 0.2초를 기다려 그 사이의 연속 변경을
+        모아(코얼레싱) 최신 값만 반영한다. dirty를 sleep 전에 내려야, 대기 중 들어온
+        변경이 dirty를 다시 세워 다음 루프에서 누락 없이 반영된다. 데몬 스레드이므로
+        창이 닫히면 함께 종료되며, 종료 직전 마지막 상태를 한 번 더 반영(drain)해
+        완료·중단 문구가 누락되지 않게 한다.
+        """
+        while not self._app_closing.is_set():
+            self._status_dirty.wait()
+            if self._app_closing.is_set():
+                break
+            self._status_dirty.clear()
+            time.sleep(_UI_TICK_SECONDS)
+            self._flush_status()
+        self._flush_status()
+
+    def _flush_status(self) -> None:
+        """예약된 최신 상태 텍스트를 실제 컨트롤에 반영한다(렌더 틱 전용)."""
+        with self._status_lock:
+            message, color = self._status_msg, self._status_color
+        if self.status.page is None:
+            return
         self.status.value = message
         self.status.color = color
-        # 상태 텍스트만 갱신한다(수집 루프에서 자주 호출되므로 가볍게 유지).
-        self.status.update()
+        try:
+            self.status.update()
+        except Exception:
+            # 창 종료 중 컨트롤/연결이 해제되면 update가 실패할 수 있다. 데몬
+            # 스레드가 조용히 죽어 이후 상태 갱신이 멈추는 것을 막고자 흡수하되,
+            # 원인 추적이 가능하도록 디버그 로그로 남긴다(조용한 무시 아님).
+            logger.debug("상태 텍스트 갱신 실패(창 종료 중일 수 있음)", exc_info=True)
 
 
 def _view(page: ft.Page) -> None:
