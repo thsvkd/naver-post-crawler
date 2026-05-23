@@ -144,7 +144,23 @@ python scripts/build.py
 | macOS | CocoaPods(Homebrew) · Xcode는 안내 | `build/macos/` |
 | Linux | clang·cmake·ninja·GTK3 등(apt/dnf/pacman) | `build/linux/` |
 
-자세한 사전 준비와 PyInstaller 폴백(`flet pack`)은 `scripts/build.py` 주석을 참고하세요.
+기본 빌드 결과물은 **실행파일 + DLL + `data/` 폴더**가 한 세트라서 폴더째 배포·실행해야
+합니다. 실행파일만 떼면 DLL을 찾지 못해 동작하지 않습니다.
+
+#### 단일 실행파일(`--pack`)
+
+DLL·폴더 없이 실행파일 하나만 배포하고 싶으면 PyInstaller 기반 `flet pack` 폴백을
+씁니다(Flutter/네이티브 툴체인 불필요).
+
+```bash
+python scripts/build.py --pack   # 결과물: dist/ 아래 단일 실행파일
+```
+
+단, 백신 오탐·느린 첫 실행(temp에 압축 해제)·큰 용량 등 단점이 있고, 위의 포터블
+`storage/` 저장 동작은 적용되지 않아 flet 기본 데이터 경로(`<Documents>/flet/<app>`)를
+씁니다. 배포보다 임시 실행용 폴백으로 권장합니다.
+
+자세한 사전 준비는 `scripts/build.py` 주석을 참고하세요.
 
 ## 개발
 
