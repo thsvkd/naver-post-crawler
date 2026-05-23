@@ -147,13 +147,13 @@ python scripts/build.py
 기본 빌드 결과물은 **실행파일 + DLL + `data/` 폴더**가 한 세트라서 폴더째 배포·실행해야
 합니다. 실행파일만 떼면 DLL을 찾지 못해 동작하지 않습니다.
 
-#### 단일 실행파일(`--pack`)
+#### 단일 실행파일(`--onefile`)
 
 DLL·폴더 없이 실행파일 하나만 배포하고 싶으면 PyInstaller 기반 `flet pack` 폴백을
 씁니다(Flutter/네이티브 툴체인 불필요).
 
 ```bash
-python scripts/build.py --pack   # 결과물: dist/ 아래 단일 실행파일
+python scripts/build.py --onefile   # 결과물: dist/ 아래 단일 실행파일
 ```
 
 단, 백신 오탐·느린 첫 실행(temp에 압축 해제)·큰 용량 등 단점이 있고, 위의 포터블
