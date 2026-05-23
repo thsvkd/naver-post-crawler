@@ -163,8 +163,9 @@ class CrawlerGUI:
                     advanced,
                     ft.Row([self.start_btn, self.stop_btn, self.open_btn]),
                     self.progress,
-                    self.status,
-                    self.counts_text,
+                    # 상태·집계 텍스트도 SelectionArea로 감싸 드래그로 선택·복사할 수
+                    # 있게 한다(에러 메시지 등을 그대로 복사하기 위함).
+                    ft.SelectionArea(content=ft.Column([self.status, self.counts_text], spacing=4)),
                     ft.Container(
                         # SelectionArea로 감싸 로그 내용을 드래그로 선택·복사할 수 있게 한다.
                         content=ft.SelectionArea(content=self.log_view),
