@@ -84,7 +84,8 @@ class CrawlerGUI:
         # 포커스 전에는 label("블로그 아이디 또는 URL")이, 포커스하면 hint(예시 형식)가
         # 보인다. 둘 다 입력값과 구분되도록 연하게 표시하고, hint는 특정 블로그가 아닌
         # 일반적인 형식 예시로 둔다.
-        _muted = ft.TextStyle(color=ft.Colors.with_opacity(0.6, ft.Colors.ON_SURFACE))
+        _muted_color = ft.Colors.with_opacity(0.6, ft.Colors.ON_SURFACE)
+        _muted = ft.TextStyle(color=_muted_color)
         self.blog_field = ft.TextField(
             label="블로그 아이디 또는 URL",
             label_style=_muted,
@@ -154,10 +155,18 @@ class CrawlerGUI:
             ft.Column(
                 [
                     ft.Text("네이버 블로그 크롤러", size=22, weight=ft.FontWeight.BOLD),
-                    self.blog_field,
-                    ft.Row(
-                        [self.out_field, self.browse_btn],
-                        vertical_alignment=ft.CrossAxisAlignment.END,
+                    # 블로그 아이디와 출력 폴더는 하나의 입력 묶음이므로 사이 간격을
+                    # 좁혀(6) 시각적으로 묶고, 바깥 간격(12)과 구분한다.
+                    ft.Column(
+                        [
+                            self.blog_field,
+                            ft.Row(
+                                [self.out_field, self.browse_btn],
+                                # 출력 폴더 입력칸과 찾아보기 버튼을 상하 중앙 정렬한다.
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                        ],
+                        spacing=6,
                     ),
                     self.retry_cb,
                     advanced,
@@ -166,13 +175,22 @@ class CrawlerGUI:
                     # 상태·집계 텍스트도 SelectionArea로 감싸 드래그로 선택·복사할 수
                     # 있게 한다(에러 메시지 등을 그대로 복사하기 위함).
                     ft.SelectionArea(content=ft.Column([self.status, self.counts_text], spacing=4)),
-                    ft.Container(
-                        # SelectionArea로 감싸 로그 내용을 드래그로 선택·복사할 수 있게 한다.
-                        content=ft.SelectionArea(content=self.log_view),
+                    # 결과 로그 영역에도 입력칸 라벨과 같은 형식(같은 muted 색)의 제목을
+                    # 달아 출력 폴더·블로그 아이디 입력칸과 일관성을 준다.
+                    ft.Column(
+                        [
+                            ft.Text("결과 로그", size=12, color=_muted_color),
+                            ft.Container(
+                                # SelectionArea로 감싸 드래그 선택·복사를 가능하게 한다.
+                                content=ft.SelectionArea(content=self.log_view),
+                                expand=True,
+                                border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+                                border_radius=8,
+                                padding=8,
+                            ),
+                        ],
+                        spacing=6,
                         expand=True,
-                        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-                        border_radius=8,
-                        padding=8,
                     ),
                 ],
                 spacing=12,
