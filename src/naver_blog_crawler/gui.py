@@ -287,6 +287,10 @@ class CrawlerGUI:
                     self._on_result(done, total, result, counts)
                 failures.save()
         except CrawlerError as exc:
+            # 수집 단계 실패(예: 존재하지 않는 블로그)면 진행바가 수집용
+            # indeterminate(스피너) 상태로 멈춰 있을 수 있다. 초기 상태(0)로
+            # 되돌려 멈춘 스피너가 남지 않게 한다.
+            self.progress.value = 0
             self._set_status(f"오류: {exc}", ft.Colors.RED)
             self._set_running(False)
             return
