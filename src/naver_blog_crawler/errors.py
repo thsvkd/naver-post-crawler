@@ -26,3 +26,15 @@ class ParseError(CrawlerError):
 
 class InvalidBlogReference(CrawlerError):
     """입력값에서 블로그 아이디를 인식하지 못했을 때 발생."""
+
+
+class BlogNotFound(CrawlerError):
+    """존재하지 않는 블로그를 요청했을 때 발생.
+
+    형식은 유효하지만 실제로 없는 아이디(post-list가 404 ``not_exist_blog`` 반환)다.
+    네트워크 일시 장애와 달리 재시도해도 의미가 없으므로 즉시 중단시킨다.
+    """
+
+    def __init__(self, blog_id: str) -> None:
+        self.blog_id = blog_id
+        super().__init__(f"존재하지 않는 블로그입니다: {blog_id}")

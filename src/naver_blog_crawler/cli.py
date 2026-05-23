@@ -29,7 +29,7 @@ from rich.text import Text
 from .blog_id import resolve_blog_id
 from .client import NaverBlogClient
 from .crawler import Crawler, CrawlPlan, Outcome, PostResult
-from .errors import InvalidBlogReference
+from .errors import BlogNotFound, InvalidBlogReference
 from .failures import FailureStore
 from .log import setup_logging
 from .writer import saved_log_nos
@@ -128,9 +128,13 @@ def main(
     with NaverBlogClient(blog_id, delay=delay, max_retries=max_retries) as client:
         failures = FailureStore.load(out_dir)
 
-        with console.status("[bold]글 목록 수집 중…[/bold]"):
-            crawler = Crawler(client, out_dir, failures, force=force)
-            plan = crawler.build_plan()
+        try:
+            with console.status("[bold]글 목록 수집 중…[/bold]"):
+                crawler = Crawler(client, out_dir, failures, force=force)
+                plan = crawler.build_plan()
+        except BlogNotFound as exc:
+            # 형식은 맞지만 없는 블로그다. 트레이스백 대신 입력 오류로 깔끔히 안내한다.
+            raise click.BadParameter(str(exc), param_hint="BLOG") from exc
 
         if limit is not None:
             plan.targets[limit:] = []

@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from .errors import FetchError, ParseError
+from .errors import BlogNotFound, FetchError, ParseError
 from .models import PostMeta
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,10 @@ class NaverBlogClient:
             except httpx.HTTPStatusError as exc:
                 last_exc = exc
                 status = exc.response.status_code
+                # 존재하지 않는 블로그는 재시도·일반 실패가 아니라 입력 자체가
+                # 잘못된 것이므로, 곧장 명확한 BlogNotFound로 중단한다.
+                if status == 404 and _is_blog_missing(exc.response):
+                    raise BlogNotFound(self.blog_id) from exc
                 if 400 <= status < 500 and status != 429:
                     break
             except httpx.HTTPError as exc:
@@ -154,6 +158,25 @@ class NaverBlogClient:
     def post_url(self, log_no: int) -> str:
         """사람이 보는 글 주소."""
         return f"{_BASE}/{self.blog_id}/{log_no}"
+
+
+def _is_blog_missing(resp: httpx.Response) -> bool:
+    """post-list 404 응답이 '존재하지 않는 블로그'인지 본문 에러 코드로 판별한다.
+
+    네이버는 없는 블로그에 ``{"isSuccess": false, "error": {"code":
+    "not_exist_blog", ...}}`` 를 404로 돌려준다. 본문이 JSON이 아니거나 코드가
+    다르면(다른 4xx) False를 돌려 일반 실패 처리에 맡긴다.
+    """
+    try:
+        data = resp.json()
+    except ValueError:
+        return False
+    error = data.get("error")
+    return (
+        data.get("isSuccess") is False
+        and isinstance(error, dict)
+        and error.get("code") == "not_exist_blog"
+    )
 
 
 def _parse_meta(item: dict[str, object]) -> PostMeta:
