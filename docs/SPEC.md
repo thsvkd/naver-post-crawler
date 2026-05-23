@@ -41,6 +41,11 @@ HTML 파싱만으로 충분하다.
 - 본문 끝 표식인 `#ad-bottom-portal` **직전까지만** 본문으로 취급한다.
 - 컴포넌트가 레이아웃 div로 감싸인 경우에도 누락되지 않도록 깊이 우선으로
   최상위 `se-component`를 순서대로 수집한다.
+- **구버전 폴백**: `se-main-container`가 없는 옛 글(스마트에디터 SE 3.0, 주로
+  외부 글을 가져온 `[공유]` 글)은 `se3_view`로 폴백한다. 본문이 여러
+  `se_doc_viewer` 블록에 나뉘고 클래스가 언더스코어식(`se_paragraph`·`se_oglink`
+  등)이며, 글 제목(`se_documentTitle`)은 본문에서 제외한다. 둘 다 없을 때만
+  `ParseError`로 본다.
 
 ## 4. 빈 글(내용 없는 글) 제외
 
