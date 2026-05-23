@@ -3,19 +3,18 @@ name = "naver-blog-crawler"
 version = "0.1.0"
 description = "네이버 블로그의 전체 글을 과거→최근 순으로 txt 파일로 백업하는 크롤러"
 readme = "README.md"
-authors = [
-    { name = "thsvkd", email = "thsxogud1123@gmail.com" }
-]
+authors = [{ name = "thsvkd", email = "thsxogud1123@gmail.com" }]
 requires-python = ">=3.14"
 dependencies = [
     "click>=8.4.0",
+    # GUI(flet)는 이 앱의 일급 기능(run.py 무인자 = GUI)이므로 기본 의존성으로 둔다.
+    # optional extra로 두면 uv가 명령마다 환경을 재동기화하며 flet을 설치/삭제 반복한다.
+    # "flet>=0.85",
+    "flet-desktop>=0.85.1",
     "httpx>=0.28.1",
     "rich>=15.0.0",
     "selectolax>=0.4.9",
 ]
-
-[project.optional-dependencies]
-gui = ["flet>=0.85"]
 
 [project.scripts]
 naver-blog-crawler = "naver_blog_crawler.cli:main"
@@ -26,10 +25,10 @@ requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "ruff>=0.15.13",
-]
+# flet-cli는 `flet build`(네이티브 빌드) 전용 도구다. 선언하지 않으면 `uv sync`가
+# 매번 "불필요"로 보고 제거하고, 직후 `flet build`가 다시 설치해 설치/삭제가
+# 반복된다. dev 그룹에 두면 sync가 보존해 이 churn을 없앤다.
+dev = ["pytest>=9.0.3", "ruff>=0.15.13", "flet-cli>=0.85.1"]
 
 [tool.ruff]
 line-length = 100
@@ -45,5 +44,7 @@ addopts = "-q"
 [tool.flet.app]
 # src-layout이므로 flet build가 src/ 아래에서 진입 모듈을 찾도록 지정한다.
 # (app.path는 CLI 옵션이 없어 pyproject.toml이 유일한 설정 위치다.)
-module = "naver_blog_crawler.gui"
+# module은 점을 확장자 구분자로 다루므로 dotted 패키지 경로(naver_blog_crawler.gui)는
+# naver_blog_crawler.py를 찾다 실패한다. 앱 루트의 main.py 셔임을 진입점으로 둔다.
+module = "main"
 path = "src"
