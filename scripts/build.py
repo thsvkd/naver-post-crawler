@@ -232,17 +232,45 @@ def verify_artifact(target: str) -> None:
         info(f"완료: build/{target}/ 를 확인하세요.")
 
 
+def _pack_artifact_path() -> Path:
+    """현재 OS에서 flet pack이 만드는 단일 실행파일/번들의 경로를 돌려준다."""
+    system = platform.system()
+    if system == "Windows":
+        return _PACK_DIST / f"{_PACK_NAME}.exe"
+    if system == "Darwin":
+        return _PACK_DIST / f"{_PACK_NAME}.app"  # macOS는 .app 번들
+    return _PACK_DIST / _PACK_NAME
+
+
+def _clean_prior_artifact() -> None:
+    """이전 단일 실행파일을 미리 지운다. 잠겨 있으면 원인을 짚어 명확히 안내한다.
+
+    flet pack은 dist를 rmtree(ignore_errors=True)로 지우는데, 결과물이 잠겨 있으면
+    (앱이 실행 중이거나 백신이 검사 중) 조용히 남겨두고 PyInstaller의 EXE 단계가
+    os.remove에서 PermissionError로 죽는다 — 불친절한 트레이스백이 그대로 노출된다.
+    여기서 먼저 지워 보고, 실패하면 사용자가 조치할 수 있게 원인을 안내한다.
+    """
+    artifact = _pack_artifact_path()
+    if not artifact.exists():
+        return
+    try:
+        if artifact.is_dir():  # macOS .app 번들
+            shutil.rmtree(artifact)
+        else:
+            artifact.unlink()
+    except OSError:
+        fail(
+            f"기존 결과물을 지울 수 없습니다(잠김): {artifact}\n"
+            "  실행 중인 앱을 모두 닫은 뒤 다시 시도하세요.\n"
+            "  (백신 실시간 검사가 파일을 잡고 있을 수도 있습니다.)"
+        )
+
+
 def verify_pack_artifact() -> None:
     """flet pack(PyInstaller) 결과물(단일 실행파일/번들)이 생겼는지 확인한다."""
     if not _PACK_DIST.exists():
         fail(f"빌드가 끝났지만 {_PACK_DIST} 가 없습니다.")
-    system = platform.system()
-    if system == "Windows":
-        artifact = _PACK_DIST / f"{_PACK_NAME}.exe"
-    elif system == "Darwin":
-        artifact = _PACK_DIST / f"{_PACK_NAME}.app"  # macOS는 .app 번들
-    else:
-        artifact = _PACK_DIST / _PACK_NAME
+    artifact = _pack_artifact_path()
     if not artifact.exists():
         fail(f"빌드가 끝났지만 결과물을 찾지 못했습니다: {artifact}")
     info(f"완료: {artifact}")
@@ -255,6 +283,10 @@ def pack_app(build_env: dict[str, str]) -> None:
     백신 오탐·느린 첫 실행·큰 용량 등의 단점이 있고, 포터블 storage/ 패치(=실행
     파일 옆 저장)는 적용되지 않아 flet 기본 데이터 경로를 쓴다.
     """
+    # 이전 결과물이 잠겨 있으면(앱 실행 중 등) 먼저 명확히 안내하고 멈춘다.
+    # 그러지 않으면 flet pack이 마지막 단계에서 PermissionError 트레이스백으로 죽는다.
+    _clean_prior_artifact()
+
     # flet pack은 cwd/build를 통째로 지우므로 flet build 결과물(build/windows)을
     # 건드리지 않도록 전용 작업 디렉터리를 만들어 그 안에서 실행한다.
     if _PACK_WORK.exists():
