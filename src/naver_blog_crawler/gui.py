@@ -63,9 +63,15 @@ class CrawlerGUI:
         page.window.min_width = 560
         page.window.min_height = 520
 
+        # 포커스 전에는 label("블로그 아이디 또는 URL")이, 포커스하면 hint(예시 형식)가
+        # 보인다. 둘 다 입력값과 구분되도록 연하게 표시하고, hint는 특정 블로그가 아닌
+        # 일반적인 형식 예시로 둔다.
+        _muted = ft.TextStyle(color=ft.Colors.with_opacity(0.6, ft.Colors.ON_SURFACE))
         self.blog_field = ft.TextField(
             label="블로그 아이디 또는 URL",
-            hint_text="winter9377  또는  https://m.blog.naver.com/winter9377",
+            label_style=_muted,
+            hint_text="예: myblog  또는  https://m.blog.naver.com/myblog",
+            hint_style=_muted,
             expand=True,
             on_submit=lambda _e: self._start(),
         )
@@ -112,7 +118,9 @@ class CrawlerGUI:
                         ],
                         spacing=10,
                     ),
-                    padding=ft.Padding(left=16, top=4, right=16, bottom=12),
+                    # 상단 여백을 넉넉히 둬 첫 입력칸의 떠오른 label("딜레이(초)")이
+                    # ExpansionTile 타이틀 행에 가려지지 않게 한다(controls_padding 기본 0).
+                    padding=ft.Padding(left=16, top=20, right=16, bottom=12),
                 )
             ],
         )
@@ -125,7 +133,7 @@ class CrawlerGUI:
         page.add(
             ft.Column(
                 [
-                    ft.Text("네이버 블로그 전체 글 백업", size=22, weight=ft.FontWeight.BOLD),
+                    ft.Text("네이버 블로그 크롤러", size=22, weight=ft.FontWeight.BOLD),
                     self.blog_field,
                     ft.Row(
                         [self.out_field, browse_btn],
@@ -138,7 +146,8 @@ class CrawlerGUI:
                     self.status,
                     self.counts_text,
                     ft.Container(
-                        content=self.log_view,
+                        # SelectionArea로 감싸 로그 내용을 드래그로 선택·복사할 수 있게 한다.
+                        content=ft.SelectionArea(content=self.log_view),
                         expand=True,
                         border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
                         border_radius=8,
@@ -191,11 +200,16 @@ class CrawlerGUI:
 
     # -- 크롤링(백그라운드 스레드) ---------------------------------------
     def _crawl(self) -> None:
-        self._set_running(True)
+        # 시작과 동시에 이전 실행의 결과·에러 표시를 모두 비운다. status도 함께
+        # 초기화해야 직전 에러 문구(예: "블로그 아이디를 입력하세요")가 수집이
+        # 시작될 때까지 빨갛게 남아 보이지 않는다.
         self.log_view.controls.clear()
         self.progress.value = 0
         self.counts_text.value = ""
-        self.page.update()
+        self.status.value = "시작 준비 중…"
+        self.status.color = None
+        # 입력 비활성화와 위 초기화를 page.update로 한 번에 반영한다.
+        self._set_running(True)
         try:
             options = self._read_options()
         except ValueError as exc:
@@ -226,9 +240,15 @@ class CrawlerGUI:
                     force=options["force"],
                     retry_failed=self.retry_cb.value,
                 )
-                self._set_status("글 목록 수집 중…")
-                plan = crawler.build_plan()
+                # 수집은 전체 건수를 미리 알 수 없으므로 진행바를 indeterminate로 두고
+                # 모은 글 수를 실시간으로 보여준다.
+                self.progress.value = None
+                self.progress.update()
+                self._set_status("글 목록 수집 중… 0개")
+                plan = crawler.build_plan(on_collect=self._on_collect)
                 total = plan.total
+                self.progress.value = 0
+                self.progress.update()
                 self._set_status(f"대상 {total}건 백업 중…")
                 for done, result in enumerate(crawler.run(plan), start=1):
                     if self._stop.is_set():
@@ -260,6 +280,10 @@ class CrawlerGUI:
         }
 
     # -- UI 갱신 헬퍼(스레드에서 호출) -----------------------------------
+    def _on_collect(self, count: int) -> None:
+        """글 목록 수집 진행 콜백 — 모은 건수를 실시간으로 보여준다."""
+        self._set_status(f"글 목록 수집 중… {count}개")
+
     def _on_result(self, done: int, total: int, result: object, counts: Counter[Outcome]) -> None:
         outcome = result.outcome  # type: ignore[attr-defined]
         label, color = _OUTCOME_STYLE[outcome]
@@ -278,7 +302,11 @@ class CrawlerGUI:
             del self.log_view.controls[0]
         self.progress.value = done / total if total else None
         self.counts_text.value = self._counts_line(counts)
-        self.page.update()
+        # 페이지 전체가 아니라 바뀐 컨트롤만 갱신해 한 건씩 즉시(실시간) 반영한다.
+        # (page.update()는 전체를 스캔/전송해 무겁고, 빠른 연속 호출 시 뭉쳐 보인다.)
+        self.log_view.update()
+        self.progress.update()
+        self.counts_text.update()
 
     def _counts_line(self, counts: Counter[Outcome]) -> str:
         parts = [
@@ -309,7 +337,8 @@ class CrawlerGUI:
     def _set_status(self, message: str, color: str | None = None) -> None:
         self.status.value = message
         self.status.color = color
-        self.page.update()
+        # 상태 텍스트만 갱신한다(수집 루프에서 자주 호출되므로 가볍게 유지).
+        self.status.update()
 
 
 def _view(page: ft.Page) -> None:
