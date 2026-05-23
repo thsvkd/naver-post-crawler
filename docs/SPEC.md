@@ -125,7 +125,7 @@ CLI와 동일한 코어(`Crawler` 제너레이터, `FailureStore`, `resolve_blog
 진행바·집계·최근 결과 로그를 실시간 갱신한다. 블로그 입력, 시작/중단, 출력 폴더
 선택·열기, 이전 실패 재시도 체크박스, 고급 옵션(딜레이·재시도·force·로그 레벨)을
 제공한다. Flet은 선택 의존성(`gui` extra)이며, 개발은 `uv run naver-blog-crawler-gui`,
-Windows 빌드는 `scripts/build-windows.ps1`로 한다.
+네이티브 빌드는 `scripts/build.py`(실행 OS 자동 감지)로 한다.
 
 ## 8. 기술 스택
 
