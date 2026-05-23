@@ -9,23 +9,30 @@
   - Flutter SDK는 flet build가 필요 시 자동으로 내려받는다.
 
 사용:
-    python scripts/build.py
+    python scripts/build.py            # flet build(Flutter 네이티브). 폴더째 배포.
+    python scripts/build.py --pack     # flet pack(PyInstaller). 단일 exe 1개.
 
-결과물: build/<platform>/ 아래 앱 번들.
+결과물:
+  - 기본:   build/<platform>/ 아래 앱 번들(실행파일 + DLL + data/). 폴더째 배포한다.
+  - --pack: dist/ 아래 단일 실행파일(Windows .exe / Linux 바이너리 / macOS .app).
 (개발 중 빠른 실행은 'python scripts/run.py --gui')
 
-앱 데이터 저장 위치: 데스크톱 빌드는 실행 파일과 같은 폴더의 storage/ 에 저장한다
-(flet 기본값인 <Documents>/flet/<app> 대신). 앱을 폴더째 배포하면 어디서 실행하든
-자기 폴더 안에 데이터를 두는 포터블 동작이며, OneDrive로 옮겨진 Documents 등에
-의존하지 않는다. 단, 쓰기 가능한 위치에서 실행해야 한다(예: Program Files 아래 X).
+앱 데이터 저장 위치: 기본(flet build) 데스크톱 빌드는 실행 파일과 같은 폴더의
+storage/ 에 저장한다(flet 기본값인 <Documents>/flet/<app> 대신). 앱을 폴더째
+배포하면 어디서 실행하든 자기 폴더 안에 데이터를 두는 포터블 동작이며, OneDrive로
+옮겨진 Documents 등에 의존하지 않는다. 단, 쓰기 가능한 위치에서 실행해야 한다
+(예: Program Files 아래 X).
 
-참고: Flutter/네이티브 툴체인 설치가 부담되면 flet build 대신 PyInstaller 기반
-      'uv run flet pack src/naver_blog_crawler/gui.py' 로 단일 실행파일을 만들 수 있다.
-      (백신 오탐·큰 용량 등 단점이 있어 배포보다 임시 실행용 폴백으로 권장.)
+--pack(단일 실행파일): Flutter/네이티브 툴체인 없이 PyInstaller로 exe 하나만
+만든다. exe만 떼서 배포·실행할 수 있는 게 장점이지만, 백신 오탐·느린 첫 실행
+(temp에 압축 해제)·큰 용량 등 단점이 있고, 위의 포터블 storage/ 패치는 적용되지
+않아 flet 기본 데이터 경로(<Documents>/flet/<app>)를 쓴다. 배포보다 임시 실행용
+폴백으로 권장한다.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import platform
 import shutil
@@ -40,6 +47,16 @@ from _common import REPO_ROOT, check, fail, info, require_uv
 # flet build 메타데이터(두 플랫폼 빌드가 동일하게 쓴다).
 _PRODUCT = "Naver Blog Backup"
 _ORG = "com.thsvkd"
+
+# `flet pack`(PyInstaller) 단일 실행파일 빌드 설정.
+# 진입점은 flet build와 같은 셔임(src/main.py)이다. pack은 이 스크립트의 디렉터리
+# (src/)를 import 경로에 올리므로 naver_blog_crawler 패키지를 그대로 찾을 수 있다.
+_PACK_ENTRY = REPO_ROOT / "src" / "main.py"
+_PACK_NAME = "naver-blog-crawler"  # 생성될 실행파일 이름(flet build 결과물과 동일)
+_PACK_DIST = REPO_ROOT / "dist"  # 단일 실행파일이 놓일 디렉터리
+# flet pack은 cwd/build 디렉터리를 통째로 지운다. flet build 결과물(build/windows)을
+# 보호하려고 pack은 전용 작업 디렉터리에서 돌린다(그 안의 build/만 정리됨).
+_PACK_WORK = REPO_ROOT / ".pack-build"
 
 # Visual Studio C++ 빌드 도구 워크로드(컴포넌트) 식별자.
 _VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
@@ -215,6 +232,49 @@ def verify_artifact(target: str) -> None:
         info(f"완료: build/{target}/ 를 확인하세요.")
 
 
+def verify_pack_artifact() -> None:
+    """flet pack(PyInstaller) 결과물(단일 실행파일/번들)이 생겼는지 확인한다."""
+    if not _PACK_DIST.exists():
+        fail(f"빌드가 끝났지만 {_PACK_DIST} 가 없습니다.")
+    system = platform.system()
+    if system == "Windows":
+        artifact = _PACK_DIST / f"{_PACK_NAME}.exe"
+    elif system == "Darwin":
+        artifact = _PACK_DIST / f"{_PACK_NAME}.app"  # macOS는 .app 번들
+    else:
+        artifact = _PACK_DIST / _PACK_NAME
+    if not artifact.exists():
+        fail(f"빌드가 끝났지만 결과물을 찾지 못했습니다: {artifact}")
+    info(f"완료: {artifact}")
+
+
+def pack_app(build_env: dict[str, str]) -> None:
+    """`flet pack`으로 단일 실행파일을 만든다(Flutter 툴체인 불필요한 폴백 경로).
+
+    flet build와 달리 DLL·data 폴더가 따로 필요 없는 단일 파일이 나온다. 대신
+    백신 오탐·느린 첫 실행·큰 용량 등의 단점이 있고, 포터블 storage/ 패치(=실행
+    파일 옆 저장)는 적용되지 않아 flet 기본 데이터 경로를 쓴다.
+    """
+    # flet pack은 cwd/build를 통째로 지우므로 flet build 결과물(build/windows)을
+    # 건드리지 않도록 전용 작업 디렉터리를 만들어 그 안에서 실행한다.
+    if _PACK_WORK.exists():
+        shutil.rmtree(_PACK_WORK)
+    _PACK_WORK.mkdir(parents=True)
+
+    info("flet pack (단일 실행파일)")
+    check(
+        ["uv", "run", "flet", "pack", str(_PACK_ENTRY),
+         "--name", _PACK_NAME, "--product-name", _PRODUCT,
+         "--distpath", str(_PACK_DIST), "--yes"],
+        env=build_env,
+        cwd=_PACK_WORK,
+    )
+
+    # PyInstaller 중간 산출물(작업 디렉터리)은 결과물이 아니므로 정리한다.
+    shutil.rmtree(_PACK_WORK, ignore_errors=True)
+    verify_pack_artifact()
+
+
 def _download_template_zip(dest: Path) -> None:
     """flet 빌드 템플릿 zip을 받는다.
 
@@ -312,7 +372,30 @@ def prepare_portable_template() -> Path:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--pack",
+        action="store_true",
+        help="flet build(Flutter) 대신 flet pack(PyInstaller)으로 단일 실행파일을 만든다. "
+        "DLL·data 폴더 없이 exe 하나만 배포할 수 있으나 백신 오탐·느린 첫 실행 등 단점이 있다.",
+    )
+    args = parser.parse_args()
+
     require_uv()
+
+    # flet build의 진행 표시(rich)는 체크마크 등 이모지를 stdout에 쓰는데, 한국어
+    # Windows 콘솔 기본 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로
+    # 빌드가 죽는다. 자식 Python을 UTF-8 모드로 강제해 stdout 인코딩을 utf-8로
+    # 바꿔 회피한다(다른 OS에선 무해). flet pack의 PyInstaller 로그에도 같이 적용된다.
+    build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+    if args.pack:
+        # PyInstaller 폴백 경로: Flutter/네이티브 툴체인이 필요 없으므로 OS별
+        # 빌드 의존성 설치를 건너뛴다. 필요한 건 pyinstaller(dev 그룹)와 flet-desktop뿐.
+        info("의존성 동기화 (uv sync)")
+        check(["uv", "sync"])
+        pack_app(build_env)
+        return 0
 
     system = platform.system()
     if system == "Windows":
@@ -329,12 +412,6 @@ def main() -> int:
 
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
-
-    # flet build의 진행 표시(rich)는 체크마크 등 이모지를 stdout에 쓰는데, 한국어
-    # Windows 콘솔 기본 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로
-    # 빌드가 죽는다. 자식 Python을 UTF-8 모드로 강제해 stdout 인코딩을 utf-8로
-    # 바꿔 회피한다(다른 OS에선 무해).
-    build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     template_root = prepare_portable_template()
 

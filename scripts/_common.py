@@ -34,16 +34,25 @@ def require_uv() -> None:
         fail("uv가 설치되어 있지 않습니다. https://docs.astral.sh/uv/ 를 참고하세요.")
 
 
-def run(command: list[str], env: dict[str, str] | None = None) -> int:
-    """저장소 루트에서 명령을 실행하고 종료 코드를 돌려준다.
+def run(
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> int:
+    """명령을 실행하고 종료 코드를 돌려준다.
 
     ``env``를 주면 자식 프로세스 환경 변수를 그 값으로 대체한다(None이면 상속).
+    ``cwd``를 주면 그 디렉터리에서 실행한다(None이면 저장소 루트).
     """
-    return subprocess.run(command, cwd=REPO_ROOT, env=env).returncode
+    return subprocess.run(command, cwd=cwd or REPO_ROOT, env=env).returncode
 
 
-def check(command: list[str], env: dict[str, str] | None = None) -> None:
+def check(
+    command: list[str],
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> None:
     """:func:`run`과 같으나, 종료 코드가 0이 아니면 즉시 종료한다."""
-    code = run(command, env=env)
+    code = run(command, env=env, cwd=cwd)
     if code != 0:
         fail(f"명령 실패(exit {code}): {' '.join(command)}")
