@@ -18,6 +18,9 @@ __pycache__/
 # Flet/빌드 산출물
 /build/
 
+# flet 빌드 템플릿 패치 작업 디렉터리(build.py가 매 빌드 재생성)
+/.flet-template/
+
 # 에이전트·도구 상태 (프로젝트 산출물 아님)
 .claude/
 .omc/

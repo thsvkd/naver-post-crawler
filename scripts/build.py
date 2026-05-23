@@ -14,6 +14,11 @@
 결과물: build/<platform>/ 아래 앱 번들.
 (개발 중 빠른 실행은 'python scripts/run.py --gui')
 
+앱 데이터 저장 위치: 데스크톱 빌드는 실행 파일과 같은 폴더의 storage/ 에 저장한다
+(flet 기본값인 <Documents>/flet/<app> 대신). 앱을 폴더째 배포하면 어디서 실행하든
+자기 폴더 안에 데이터를 두는 포터블 동작이며, OneDrive로 옮겨진 Documents 등에
+의존하지 않는다. 단, 쓰기 가능한 위치에서 실행해야 한다(예: Program Files 아래 X).
+
 참고: Flutter/네이티브 툴체인 설치가 부담되면 flet build 대신 PyInstaller 기반
       'uv run flet pack src/naver_blog_crawler/gui.py' 로 단일 실행파일을 만들 수 있다.
       (백신 오탐·큰 용량 등 단점이 있어 배포보다 임시 실행용 폴백으로 권장.)
@@ -25,6 +30,9 @@ import os
 import platform
 import shutil
 import subprocess
+import time
+import urllib.request
+import zipfile
 from pathlib import Path
 
 from _common import REPO_ROOT, check, fail, info, require_uv
@@ -35,6 +43,17 @@ _ORG = "com.thsvkd"
 
 # Visual Studio C++ 빌드 도구 워크로드(컴포넌트) 식별자.
 _VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+
+# flet 네이티브 앱은 기본적으로 데이터 폴더를 <Documents>/flet/<app>에 만든다
+# (생성 코드는 빌드 템플릿의 lib/main.dart). 그런데 Documents가 OneDrive로 옮겨져
+# 쓰기 불능이면 시작 시 폴더 생성에 실패해 앱이 죽고, 폴더째 배포하는 포터블 앱에도
+# 적합하지 않다. 그래서 빌드 템플릿의 main.dart를 받아 "데스크톱에서는 실행 파일 옆
+# storage/ 폴더에 저장"하도록 패치한 뒤 그 템플릿(--template)으로 빌드한다.
+_FLET_TEMPLATE_REF = "v0.85.1"  # 설치된 flet 버전에 맞춘 빌드 템플릿 태그
+_FLET_TEMPLATE_URL = (
+    "https://github.com/flet-dev/flet/releases/download/"
+    f"{_FLET_TEMPLATE_REF}/flet-build-template.zip"
+)
 
 
 def _succeeds(command: list[str]) -> bool:
@@ -196,6 +215,102 @@ def verify_artifact(target: str) -> None:
         info(f"완료: build/{target}/ 를 확인하세요.")
 
 
+def _download_template_zip(dest: Path) -> None:
+    """flet 빌드 템플릿 zip을 받는다.
+
+    GitHub가 간헐적으로 zip 대신 HTML(500 'Unicorn!') 페이지를 반환하는 일이 있어,
+    유효한 zip을 받을 때까지 재시도하고 끝내 실패하면 명확히 중단한다.
+    """
+    last_reason = ""
+    for _attempt in range(5):
+        try:
+            urllib.request.urlretrieve(_FLET_TEMPLATE_URL, dest)
+        except OSError as exc:  # HTTPError(5xx 등) 포함
+            last_reason = str(exc)
+        else:
+            if zipfile.is_zipfile(dest):
+                return
+            last_reason = "다운로드 응답이 유효한 zip이 아님(GitHub 일시 오류 가능)"
+        time.sleep(2)
+    fail(f"flet 빌드 템플릿을 받지 못했습니다: {last_reason}\n  URL: {_FLET_TEMPLATE_URL}")
+
+
+def _patch_storage_location(main_dart: Path) -> None:
+    """빌드 템플릿 main.dart의 데스크톱 앱 데이터/임시 폴더를 실행 파일 옆 storage/로 바꾼다.
+
+    원본은 <Documents>/flet/<app>에 폴더를 만들지만, 이를 실행 파일과 같은 폴더의
+    storage/data, storage/temp로 바꿔 어디서 실행하든 자기 폴더 안에 데이터를 둔다(포터블).
+    'data'가 아니라 'storage'를 쓰는 이유는 Flutter가 <exe>/data를 번들 용도로
+    예약(app.so 등)하기 때문이다.
+    """
+    text = main_dart.read_text(encoding="utf-8")
+    original = (
+        "    if (defaultTargetPlatform != TargetPlatform.iOS &&\n"
+        "        defaultTargetPlatform != TargetPlatform.android) {\n"
+        "      // append app name to the path and create dir\n"
+        "      PackageInfo packageInfo = await PackageInfo.fromPlatform();\n"
+        '      appDataPath = path.join(appDataPath, "flet", packageInfo.packageName);\n'
+        "      if (!await Directory(appDataPath).exists()) {\n"
+        "        await Directory(appDataPath).create(recursive: true);\n"
+        "      }\n"
+        "    }\n"
+    )
+    replacement = (
+        "    if (defaultTargetPlatform != TargetPlatform.iOS &&\n"
+        "        defaultTargetPlatform != TargetPlatform.android) {\n"
+        "      // Portable desktop build: store app data next to the executable so the\n"
+        "      // app runs from any folder and never depends on Documents/OneDrive.\n"
+        "      // NOTE: use a 'storage/' subfolder, not 'data/', because Flutter reserves\n"
+        "      // <exe>/data for its own bundle (app.so, icudtl.dat, flutter_assets).\n"
+        "      final exeDir = path.dirname(Platform.resolvedExecutable);\n"
+        '      appDataPath = path.join(exeDir, "storage", "data");\n'
+        '      appTempPath = path.join(exeDir, "storage", "temp");\n'
+        "      for (final d in [appDataPath, appTempPath]) {\n"
+        "        if (!await Directory(d).exists()) {\n"
+        "          await Directory(d).create(recursive: true);\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+    )
+    if original not in text:
+        fail(
+            "flet 템플릿 main.dart 구조가 예상과 달라 저장 위치 패치를 적용하지 못했습니다.\n"
+            f"  flet/템플릿 버전이 바뀌었을 수 있습니다(_FLET_TEMPLATE_REF={_FLET_TEMPLATE_REF})."
+        )
+    main_dart.write_text(text.replace(original, replacement), encoding="utf-8")
+
+
+def prepare_portable_template() -> Path:
+    """flet 빌드 템플릿을 확보·패치하고 cookiecutter 템플릿 루트 경로를 돌려준다.
+
+    유효한 cookiecutter 캐시가 있으면 재사용하고, 없으면 버전에 맞춰 내려받는다.
+    """
+    work = REPO_ROOT / ".flet-template"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+
+    zip_path = work / "flet-build-template.zip"
+    cached = Path.home() / ".cookiecutters" / "flet-build-template.zip"
+    if cached.is_file() and zipfile.is_zipfile(cached):
+        info("flet 빌드 템플릿 캐시 재사용")
+        shutil.copyfile(cached, zip_path)
+    else:
+        info("flet 빌드 템플릿 다운로드")
+        _download_template_zip(zip_path)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(work)
+
+    root = work / "build"  # cookiecutter.json 이 있는 템플릿 루트
+    main_dart = root / "{{cookiecutter.out_dir}}" / "lib" / "main.dart"
+    if not main_dart.is_file():
+        fail(f"빌드 템플릿에서 main.dart를 찾지 못했습니다: {main_dart}")
+    _patch_storage_location(main_dart)
+    info("앱 데이터 저장 위치를 실행 파일 옆 storage/ 로 패치함")
+    return root
+
+
 def main() -> int:
     require_uv()
 
@@ -221,9 +336,12 @@ def main() -> int:
     # 바꿔 회피한다(다른 OS에선 무해).
     build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
+    template_root = prepare_portable_template()
+
     info(f"flet build {target}")
     check(
-        ["uv", "run", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG],
+        ["uv", "run", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG,
+         "--template", str(template_root)],
         env=build_env,
     )
 
