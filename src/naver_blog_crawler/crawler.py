@@ -119,7 +119,15 @@ class Crawler:
         try:
             body = self._fetch_and_parse(meta.log_no)
         except CrawlerError as exc:
-            logger.error("실패: %04d logNo=%s '%s' — %s", seq, meta.log_no, meta.title, exc)
+            # exc_info=True로 원인 트레이스백까지 파일 로그에 남긴다.
+            logger.error(
+                "실패: %04d logNo=%s '%s' — %s",
+                seq,
+                meta.log_no,
+                meta.title,
+                exc,
+                exc_info=True,
+            )
             self.failures.record(meta, str(exc))
             return PostResult(seq, total, meta, Outcome.FAILED, error=str(exc))
 

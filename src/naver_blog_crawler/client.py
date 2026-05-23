@@ -103,8 +103,10 @@ class NaverBlogClient:
                 )
                 time.sleep(self.delay * (2**attempt))
         url = str(self._client.build_request("GET", path, params=params).url)
+        # 어떤 요청이 최종 실패했는지만 남긴다. 트레이스백은 상위(crawler)에서
+        # exc_info로 한 번만 기록하고, 원인은 __cause__로 연결해 넘긴다.
         logger.error("요청 최종 실패(%d회): %s", self.max_retries, url)
-        raise FetchError(url, attempts=self.max_retries, cause=last_exc)
+        raise FetchError(url, attempts=self.max_retries, cause=last_exc) from last_exc
 
     def iter_post_meta(self) -> Iterator[PostMeta]:
         """전체글의 메타데이터를 최신→과거 순으로 순회한다.
