@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 from naver_blog_crawler.crawler import Crawler, Outcome, _realign
@@ -20,9 +21,16 @@ _BAD_HTML = "<html><body>컨테이너 없음</body></html>"
 class _FakeClient:
     """logNo별로 정해진 HTML 시퀀스를 돌려주는 가짜 클라이언트."""
 
-    def __init__(self, responses: dict[int, list[str]]) -> None:
+    def __init__(
+        self, responses: dict[int, list[str]], metas: list[PostMeta] | None = None
+    ) -> None:
         self._responses = responses
+        self._metas = metas or []
         self.fetched: list[int] = []
+
+    def iter_post_meta(self) -> Iterator[PostMeta]:
+        # 실제 클라이언트와 같이 최신→과거 순으로 흘려보낸다.
+        yield from self._metas
 
     def fetch_post_html(self, log_no: int) -> str:
         self.fetched.append(log_no)
@@ -121,3 +129,32 @@ def test_known_failure_retried_and_cleared_when_enabled(tmp_path: Path) -> None:
     result = _run_one(crawler, _meta(1))
     assert result.outcome is Outcome.WRITTEN
     assert 1 not in crawler.failures  # 성공하면 실패 기록 해소
+
+
+def test_build_plan_reorders_and_reports_progress(tmp_path: Path) -> None:
+    # 클라이언트는 최신→과거 순으로 메타를 흘려보낸다.
+    client = _FakeClient({}, metas=[_meta(3), _meta(2), _meta(1)])
+    crawler = _make_crawler(tmp_path, client)
+
+    collected: list[int] = []
+    plan = crawler.build_plan(on_collect=collected.append)
+
+    # on_collect는 모은 누적 건수로 한 건씩 순서대로 호출된다.
+    assert collected == [1, 2, 3]
+    # 대상은 과거→최근으로 뒤집혀 정렬된다.
+    assert [m.log_no for m in plan.targets] == [1, 2, 3]
+    assert plan.skipped_anniversary == 0
+
+
+def test_build_plan_excludes_anniversary_posts(tmp_path: Path) -> None:
+    anniversary = PostMeta(log_no=2, title="추억", add_date_ms=0, is_anniversary=True)
+    client = _FakeClient({}, metas=[anniversary, _meta(1)])
+    crawler = _make_crawler(tmp_path, client)
+
+    collected: list[int] = []
+    plan = crawler.build_plan(on_collect=collected.append)
+
+    # 수집 콜백은 거르기 전 전체 건수로 호출되고, 계획에는 '그날의 추억'이 제외된다.
+    assert collected == [1, 2]
+    assert [m.log_no for m in plan.targets] == [1]
+    assert plan.skipped_anniversary == 1
