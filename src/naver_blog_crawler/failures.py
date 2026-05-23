@@ -17,7 +17,7 @@ from .models import KST, PostMeta
 
 logger = logging.getLogger(__name__)
 
-_STORE_VERSION = 1
+_STORE_VERSION = 2
 _FILENAME = ".failures.json"
 
 
@@ -30,6 +30,9 @@ class FailureRecord:
     error: str
     failed_at: str
     attempts: int
+    # 사람이 곧장 열어볼 수 있는 글 주소. url 필드가 없던 옛 기록과의
+    # 호환을 위해 기본값을 둔다.
+    url: str = ""
 
 
 class FailureStore:
@@ -65,7 +68,7 @@ class FailureStore:
         """logNo 순으로 정렬한 실패 기록."""
         return [self._records[key] for key in sorted(self._records)]
 
-    def record(self, meta: PostMeta, error: str) -> None:
+    def record(self, meta: PostMeta, error: str, url: str) -> None:
         """실패를 기록한다. 이미 있으면 시도 횟수를 누적한다."""
         previous = self._records.get(meta.log_no)
         attempts = previous.attempts + 1 if previous else 1
@@ -75,6 +78,7 @@ class FailureStore:
             error=error,
             failed_at=datetime.now(KST).isoformat(timespec="seconds"),
             attempts=attempts,
+            url=url,
         )
 
     def clear(self, log_no: int) -> None:

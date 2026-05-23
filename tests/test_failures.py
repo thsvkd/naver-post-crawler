@@ -14,9 +14,12 @@ from naver_blog_crawler.writer import saved_log_nos
 _META = PostMeta(log_no=123, title="실패한 글", add_date_ms=1692576000000, is_anniversary=False)
 
 
+_URL = "https://blog.naver.com/someblog/123"
+
+
 def test_record_save_load_roundtrip(tmp_path: Path) -> None:
     store = FailureStore.load(tmp_path)
-    store.record(_META, "se-main-container를 찾을 수 없습니다.")
+    store.record(_META, "se-main-container를 찾을 수 없습니다.", url=_URL)
     store.save()
 
     reloaded = FailureStore.load(tmp_path)
@@ -24,19 +27,31 @@ def test_record_save_load_roundtrip(tmp_path: Path) -> None:
     assert len(reloaded) == 1
     assert reloaded.records[0].title == "실패한 글"
     assert reloaded.records[0].attempts == 1
+    assert reloaded.records[0].url == _URL
 
 
 def test_repeated_record_accumulates_attempts(tmp_path: Path) -> None:
     store = FailureStore.load(tmp_path)
-    store.record(_META, "오류1")
-    store.record(_META, "오류2")
+    store.record(_META, "오류1", url=_URL)
+    store.record(_META, "오류2", url=_URL)
     assert store.records[0].attempts == 2
     assert store.records[0].error == "오류2"
 
 
+def test_load_legacy_record_without_url(tmp_path: Path) -> None:
+    # url 필드가 없던 옛 기록도 빈 url로 읽을 수 있어야 한다.
+    (tmp_path / ".failures.json").write_text(
+        '{"version": 1, "failures": [{"log_no": 123, "title": "옛 글",'
+        ' "error": "오류", "failed_at": "2026-05-23T19:25:11+09:00", "attempts": 1}]}',
+        encoding="utf-8",
+    )
+    reloaded = FailureStore.load(tmp_path)
+    assert reloaded.records[0].url == ""
+
+
 def test_clear_then_save_removes_file(tmp_path: Path) -> None:
     store = FailureStore.load(tmp_path)
-    store.record(_META, "오류")
+    store.record(_META, "오류", url=_URL)
     store.save()
     assert (tmp_path / ".failures.json").exists()
 

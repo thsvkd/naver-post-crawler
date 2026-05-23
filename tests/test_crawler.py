@@ -91,6 +91,8 @@ def test_failed_post_is_recorded(tmp_path: Path) -> None:
     result = _run_one(crawler, _meta(1))
     assert result.outcome is Outcome.FAILED
     assert 1 in crawler.failures
+    # 실패 기록에 사람이 곧장 열어볼 수 있는 글 주소를 함께 남긴다.
+    assert crawler.failures.records[0].url == client.post_url(1)
     # parse_retries 만큼 다시 받아본다.
     assert client.fetched == [1, 1, 1]
 
@@ -106,7 +108,7 @@ def test_transient_failure_recovers_within_retries(tmp_path: Path) -> None:
 def test_known_failure_skipped_without_retry(tmp_path: Path) -> None:
     client = _FakeClient({1: [_VALID_HTML]})
     crawler = _make_crawler(tmp_path, client)
-    crawler.failures.record(_meta(1), "이전 오류")
+    crawler.failures.record(_meta(1), "이전 오류", url=client.post_url(1))
     result = _run_one(crawler, _meta(1))
     assert result.outcome is Outcome.SKIPPED_FAILED
     assert client.fetched == []  # 본문을 받지 않는다
@@ -115,7 +117,7 @@ def test_known_failure_skipped_without_retry(tmp_path: Path) -> None:
 def test_known_failure_retried_and_cleared_when_enabled(tmp_path: Path) -> None:
     client = _FakeClient({1: [_VALID_HTML]})
     crawler = _make_crawler(tmp_path, client, retry_failed=True)
-    crawler.failures.record(_meta(1), "이전 오류")
+    crawler.failures.record(_meta(1), "이전 오류", url=client.post_url(1))
     result = _run_one(crawler, _meta(1))
     assert result.outcome is Outcome.WRITTEN
     assert 1 not in crawler.failures  # 성공하면 실패 기록 해소

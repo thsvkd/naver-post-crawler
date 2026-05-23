@@ -128,7 +128,7 @@ class Crawler:
                 exc,
                 exc_info=True,
             )
-            self.failures.record(meta, str(exc))
+            self.failures.record(meta, str(exc), url=self.client.post_url(meta.log_no))
             return PostResult(seq, total, meta, Outcome.FAILED, error=str(exc))
 
         # 성공적으로 받았으면(빈 글 포함) 과거 실패 기록을 해소한다.
