@@ -109,7 +109,12 @@ def main(
 
     BLOG 는 블로그 아이디(winter9377)나 블로그·포스트 URL 모두 가능하다.
     """
-    log_file = setup_logging(log_dir, level=logging.getLevelNamesMapping()[log_level.upper()])
+    # 진행 화면(Live)과 같은 콘솔을 넘겨, 로그가 진행바 위로 흐르도록 한다.
+    log_file = setup_logging(
+        log_dir,
+        level=logging.getLevelNamesMapping()[log_level.upper()],
+        console=console,
+    )
 
     try:
         blog_id = resolve_blog_id(blog)

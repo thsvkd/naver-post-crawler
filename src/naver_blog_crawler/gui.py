@@ -16,6 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 import flet as ft
+from rich.console import Console
 
 from .blog_id import resolve_blog_id
 from .client import NaverBlogClient
@@ -25,6 +26,11 @@ from .failures import FailureStore
 from .log import setup_logging
 
 logger = logging.getLogger(__name__)
+
+# GUI는 자체 결과 로그를 보여주지만, 터미널에서 실행한 경우 자세한 로그를 함께
+# 보고 싶을 수 있으므로 stderr 콘솔에도 출력한다. 패키지된 창 모드 앱은 stderr가
+# 없을 수 있으므로(None) 그때는 콘솔 출력을 끄고 파일에만 기록한다.
+_console = Console(stderr=True) if sys.stderr is not None else None
 
 # 결과 종류별 (라벨, 색).
 _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
@@ -197,7 +203,7 @@ class CrawlerGUI:
             self._set_running(False)
             return
 
-        setup_logging(options["log_dir"], level=options["log_level"])
+        setup_logging(options["log_dir"], level=options["log_level"], console=_console)
         try:
             blog_id = resolve_blog_id(self.blog_field.value)
         except InvalidBlogReference as exc:
