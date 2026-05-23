@@ -218,7 +218,10 @@ class CrawlerGUI:
 
     def _start(self) -> None:
         if not self.blog_field.value.strip():
-            self._set_status("블로그 아이디 또는 URL을 입력하세요.", ft.Colors.RED)
+            # 검증 실패는 사용자가 방금 누른 단발 이벤트이자 UI 스레드 위에서
+            # 일어나므로, 백그라운드 렌더 틱으로 넘기지 않고 곧바로 반영해 지연
+            # 없이 보이게 한다(틱 핸드오프는 수집 루프의 고빈도 갱신 전용).
+            self._set_status_now("블로그 아이디 또는 URL을 입력하세요.", ft.Colors.RED)
             return
         self._stop.clear()
         self.page.run_thread(self._crawl)
@@ -371,6 +374,20 @@ class CrawlerGUI:
             self._status_msg = message
             self._status_color = color
         self._status_dirty.set()
+
+    def _set_status_now(self, message: str, color: str | None = None) -> None:
+        """상태 텍스트를 즉시 반영한다(UI 스레드의 단발 이벤트 전용).
+
+        :meth:`_set_status`와 달리 렌더 틱(:meth:`_ui_ticker`)을 거치지 않고 바로
+        :meth:`_flush_status`를 호출한다. 시작 버튼 검증처럼 사용자가 방금 일으킨
+        이벤트는 백그라운드 틱으로 넘길 때 생기는 핸드오프 지연 없이 즉시 보여야
+        한다. 반드시 UI 스레드(이벤트 핸들러)에서만 호출한다 — 백그라운드 스레드의
+        고빈도 갱신은 :meth:`_set_status`로 틱에 모아야 화면이 밀리지 않는다.
+        """
+        with self._status_lock:
+            self._status_msg = message
+            self._status_color = color
+        self._flush_status()
 
     def _ui_ticker(self) -> None:
         """상태 변경을 즉시 반영하고, 직후의 연속 변경만 묶는 렌더 루프.

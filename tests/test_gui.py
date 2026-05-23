@@ -58,6 +58,19 @@ def test_set_status_defers_until_flush() -> None:
     assert gui.status.updates == 1  # type: ignore[attr-defined]
 
 
+def test_set_status_now_applies_immediately_without_tick() -> None:
+    gui = _bare_gui()
+
+    gui._set_status_now("블로그 아이디 또는 URL을 입력하세요.", "red")
+
+    # 렌더 틱을 거치지 않고 곧바로 컨트롤에 반영된다.
+    assert gui.status.value == "블로그 아이디 또는 URL을 입력하세요."  # type: ignore[attr-defined]
+    assert gui.status.color == "red"  # type: ignore[attr-defined]
+    assert gui.status.updates == 1  # type: ignore[attr-defined]
+    # 틱을 쓰지 않으므로 dirty도 세우지 않는다(백그라운드 틱 스레드를 깨우지 않음).
+    assert not gui._status_dirty.is_set()
+
+
 def test_flush_coalesces_to_latest_value() -> None:
     gui = _bare_gui()
 
