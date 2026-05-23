@@ -28,7 +28,9 @@ build-backend = "uv_build"
 # flet-cli는 `flet build`(네이티브 빌드) 전용 도구다. 선언하지 않으면 `uv sync`가
 # 매번 "불필요"로 보고 제거하고, 직후 `flet build`가 다시 설치해 설치/삭제가
 # 반복된다. dev 그룹에 두면 sync가 보존해 이 churn을 없앤다.
-dev = ["pytest>=9.0.3", "ruff>=0.15.13", "flet-cli>=0.85.1"]
+# pyinstaller는 `flet pack`(단일 exe 폴백 빌드, build.py --pack) 전용이다.
+# flet pack은 내부에서 `import PyInstaller`를 하므로 없으면 빌드가 실패한다.
+dev = ["pytest>=9.0.3", "ruff>=0.15.13", "flet-cli>=0.85.1", "pyinstaller>=6.0"]
 
 [tool.ruff]
 line-length = 100
