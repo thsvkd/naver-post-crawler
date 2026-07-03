@@ -6,12 +6,12 @@ post-list JSON API로 글 목록을, PostView HTML로 본문을 가져온다.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Iterator
 
 import httpx
 
-from .errors import BlogNotFound, FetchError, ParseError
+from .errors import BlogNotFound, ParseError
+from .http import get_with_retry
 from .models import PostMeta
 
 logger = logging.getLogger(__name__)
@@ -76,41 +76,24 @@ class NaverBlogClient:
 
         재시도해도 의미 없는 4xx(요청 자체 오류)는 429(Too Many Requests)를
         빼고 즉시 중단한다. 일시적 장애·5xx·429는 백오프를 두고 재시도한다.
+        존재하지 않는 블로그(404 ``not_exist_blog``)는 :meth:`_fatal`로 감지해
+        재시도 없이 곧장 :class:`BlogNotFound`로 중단한다.
         """
-        last_exc: Exception | None = None
-        for attempt in range(self.max_retries):
-            if self.delay:
-                time.sleep(self.delay)
-            try:
-                resp = self._client.get(path, params=params)
-                resp.raise_for_status()
-                return resp
-            except httpx.HTTPStatusError as exc:
-                last_exc = exc
-                status = exc.response.status_code
-                # 존재하지 않는 블로그는 재시도·일반 실패가 아니라 입력 자체가
-                # 잘못된 것이므로, 곧장 명확한 BlogNotFound로 중단한다.
-                if status == 404 and _is_blog_missing(exc.response):
-                    raise BlogNotFound(self.blog_id) from exc
-                if 400 <= status < 500 and status != 429:
-                    break
-            except httpx.HTTPError as exc:
-                last_exc = exc
-            # 마지막 시도가 아니면 점증 대기 후 재시도한다.
-            if attempt < self.max_retries - 1:
-                logger.warning(
-                    "요청 실패, 재시도 %d/%d: %s (%r)",
-                    attempt + 1,
-                    self.max_retries,
-                    path,
-                    last_exc,
-                )
-                time.sleep(self.delay * (2**attempt))
-        url = str(self._client.build_request("GET", path, params=params).url)
-        # 어떤 요청이 최종 실패했는지만 남긴다. 트레이스백은 상위(crawler)에서
-        # exc_info로 한 번만 기록하고, 원인은 __cause__로 연결해 넘긴다.
-        logger.error("요청 최종 실패(%d회): %s", self.max_retries, url)
-        raise FetchError(url, attempts=self.max_retries, cause=last_exc) from last_exc
+        return get_with_retry(
+            self._client,
+            path,
+            params,
+            delay=self.delay,
+            max_retries=self.max_retries,
+            logger=logger,
+            fatal=self._fatal,
+        )
+
+    def _fatal(self, exc: httpx.HTTPStatusError) -> BlogNotFound | None:
+        """존재하지 않는 블로그면 재시도 없이 중단할 :class:`BlogNotFound`를 돌려준다."""
+        if exc.response.status_code == 404 and _is_blog_missing(exc.response):
+            return BlogNotFound(self.blog_id)
+        return None
 
     def iter_post_meta(self) -> Iterator[PostMeta]:
         """전체글의 메타데이터를 최신→과거 순으로 순회한다.
