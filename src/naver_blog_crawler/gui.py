@@ -20,11 +20,21 @@ import flet as ft
 from rich.console import Console
 
 from .blog_id import resolve_blog_id
+from .cafe_client import NaverCafeClient
+from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
+from .cookie import load_cookie, parse_cookie_file, save_cookie
 from .crawler import Crawler, Outcome
-from .errors import CrawlerError, InvalidBlogReference
+from .errors import (
+    CrawlerError,
+    InvalidBlogReference,
+    InvalidCafeReference,
+    InvalidCookieFile,
+)
 from .failures import FailureStore
 from .log import setup_logging
+from .parser import parse_cafe_body
+from .source import PostSource
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +82,7 @@ class CrawlerGUI:
     # -- UI 구성 ---------------------------------------------------------
     def _build(self) -> None:
         page = self.page
-        page.title = "네이버 블로그 백업"
+        page.title = "네이버 블로그/카페 백업"
         page.theme_mode = ft.ThemeMode.SYSTEM
         page.padding = 20
         page.window.width = 760
@@ -85,11 +95,12 @@ class CrawlerGUI:
         # 보인다. 둘 다 입력값과 구분되도록 연하게 표시하고, hint는 특정 블로그가 아닌
         # 일반적인 형식 예시로 둔다.
         _muted_color = ft.Colors.with_opacity(0.6, ft.Colors.ON_SURFACE)
+        self._muted_color = _muted_color  # 쿠키 상태 등 메서드에서 재사용한다.
         _muted = ft.TextStyle(color=_muted_color)
         self.blog_field = ft.TextField(
-            label="블로그 아이디 또는 URL",
+            label="블로그 아이디/URL 또는 카페 주소",
             label_style=_muted,
-            hint_text="예: myblog  또는  https://m.blog.naver.com/myblog",
+            hint_text="예: myblog  또는  https://cafe.naver.com/mycafe",
             hint_style=_muted,
             expand=True,
             on_submit=lambda _e: self._start(),
@@ -128,6 +139,21 @@ class CrawlerGUI:
             width=160,
             options=[ft.dropdown.Option(x) for x in ("DEBUG", "INFO", "WARNING", "ERROR")],
         )
+        # 카페에서 특정 게시판만 받을 때의 menuId(선택). 비우면 접근 가능한 게시판 전체.
+        self.menu_field = ft.TextField(label="카페 게시판 menuId (선택)", width=200)
+        # 카페 로그인/등급 제한 게시판용 세션 쿠키. 블로그·공개 카페는 비워 둔다.
+        # 직접 입력하거나, '쿠키 업데이트' 버튼으로 파일에서 불러와 내부에 저장한다.
+        self.cookie_field = ft.TextField(
+            label="카페 세션 쿠키 (직접 입력, 선택)",
+            hint_text="NID_AUT=...; NID_SES=...  또는 아래 '쿠키 업데이트'로 파일에서 불러오기",
+            password=True,
+            can_reveal_password=True,
+            expand=True,
+        )
+        self.cookie_update_btn = ft.Button(
+            "쿠키 업데이트", icon=ft.Icons.UPLOAD_FILE, on_click=self._pick_cookie_file
+        )
+        self.cookie_status = ft.Text(size=12, color=_muted_color)
         advanced = ft.ExpansionTile(
             title=ft.Text("고급 옵션"),
             controls=[
@@ -136,6 +162,19 @@ class CrawlerGUI:
                         [
                             ft.Row([self.delay_field, self.retries_field, self.loglevel_dd]),
                             self.force_cb,
+                            self.menu_field,
+                            # 쿠키: 직접 입력칸 + 파일에서 불러오는 버튼 + 저장 상태.
+                            ft.Column(
+                                [
+                                    self.cookie_field,
+                                    ft.Row(
+                                        [self.cookie_update_btn, self.cookie_status],
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                        spacing=12,
+                                    ),
+                                ],
+                                spacing=6,
+                            ),
                         ],
                         spacing=10,
                     ),
@@ -198,6 +237,7 @@ class CrawlerGUI:
             )
         )
         self._refresh_failures()
+        self._refresh_cookie_status()
 
     # -- 이벤트 ----------------------------------------------------------
     async def _pick_folder(self, _e: ft.ControlEvent) -> None:
@@ -206,6 +246,49 @@ class CrawlerGUI:
             self.out_field.value = path
             self.out_field.update()
             self._refresh_failures()
+
+    async def _pick_cookie_file(self, _e: ft.ControlEvent) -> None:
+        """쿠키 파일을 골라 파싱·저장한다('쿠키 업데이트' 버튼)."""
+        result = await self.file_picker.pick_files(
+            dialog_title="쿠키 파일 선택 (cookies.txt 또는 JSON)",
+            allow_multiple=False,
+        )
+        path = _first_picked_path(result)
+        if path:
+            self._update_cookie(Path(path))
+
+    def _update_cookie(self, path: Path) -> None:
+        """쿠키 파일을 파싱해 내부 저장소에 저장하고 상태를 갱신한다."""
+        try:
+            cookie = parse_cookie_file(path)
+        except InvalidCookieFile as exc:
+            self._set_cookie_status(f"쿠키 파일 오류: {exc}", ft.Colors.RED)
+            return
+        try:
+            save_cookie(cookie)
+        except OSError as exc:
+            # 파싱은 됐으나 내부 저장에 실패(디스크/권한 등). 조용히 넘기지 않고 알린다.
+            logger.error("쿠키 저장 실패", exc_info=True)
+            self._set_cookie_status(f"쿠키 저장 실패: {exc}", ft.Colors.RED)
+            return
+        # 파일에서 저장했으면 직접 입력칸은 비워, 저장된 쿠키를 쓰도록 한다.
+        self.cookie_field.value = ""
+        if self.cookie_field.page is not None:
+            self.cookie_field.update()
+        self._set_cookie_status("쿠키 저장됨 — 카페 백업에 자동 사용됩니다. ✓", ft.Colors.GREEN)
+
+    def _refresh_cookie_status(self) -> None:
+        """저장된 쿠키 유무를 상태 텍스트에 반영한다."""
+        if load_cookie() is not None:
+            self._set_cookie_status("저장된 쿠키: 있음 ✓", ft.Colors.GREEN)
+        else:
+            self._set_cookie_status("저장된 쿠키: 없음", self._muted_color)
+
+    def _set_cookie_status(self, message: str, color: str | None) -> None:
+        self.cookie_status.value = message
+        self.cookie_status.color = color
+        if self.cookie_status.page is not None:
+            self.cookie_status.update()
 
     def _open_folder(self, _e: ft.ControlEvent) -> None:
         path = Path(self.out_field.value.strip() or "output").resolve()
@@ -240,7 +323,7 @@ class CrawlerGUI:
             # 검증 실패는 사용자가 방금 누른 단발 이벤트이자 UI 스레드 위에서
             # 일어나므로, 백그라운드 렌더 틱으로 넘기지 않고 곧바로 반영해 지연
             # 없이 보이게 한다(틱 핸드오프는 수집 루프의 고빈도 갱신 전용).
-            self._set_status_now("블로그 아이디 또는 URL을 입력하세요.", ft.Colors.RED)
+            self._set_status_now("블로그 아이디/URL 또는 카페 주소를 입력하세요.", ft.Colors.RED)
             return
         self._stop.clear()
         self.page.run_thread(self._crawl)
@@ -265,28 +348,19 @@ class CrawlerGUI:
             return
 
         setup_logging(options["log_dir"], level=options["log_level"], console=_console)
+
+        out_dir: Path = options["out_dir"]
         try:
-            blog_id = resolve_blog_id(self.blog_field.value)
-        except InvalidBlogReference as exc:
+            client, crawler, failures = self._build_source(self.blog_field.value, options, out_dir)
+        except (InvalidBlogReference, InvalidCafeReference) as exc:
             self._set_status(str(exc), ft.Colors.RED)
             self._set_running(False)
             return
 
-        out_dir: Path = options["out_dir"]
         counts: Counter[Outcome] = Counter()
         interrupted = False
         try:
-            with NaverBlogClient(
-                blog_id, delay=options["delay"], max_retries=options["max_retries"]
-            ) as client:
-                failures = FailureStore.load(out_dir)
-                crawler = Crawler(
-                    client,
-                    out_dir,
-                    failures,
-                    force=options["force"],
-                    retry_failed=self.retry_cb.value,
-                )
+            with client:
                 # 수집은 전체 건수를 미리 알 수 없으므로 진행바를 indeterminate로 두고
                 # 모은 글 수를 실시간으로 보여준다.
                 self.progress.value = None
@@ -321,14 +395,69 @@ class CrawlerGUI:
             max_retries = int(self.retries_field.value)
         except (TypeError, ValueError) as exc:
             raise ValueError("딜레이·최대 재시도 값이 올바르지 않습니다.") from exc
+        menu_raw = (self.menu_field.value or "").strip()
+        if menu_raw and not menu_raw.isdigit():
+            raise ValueError("카페 게시판 menuId는 숫자여야 합니다.")
         return {
             "out_dir": Path(self.out_field.value.strip() or "output"),
             "delay": delay,
             "max_retries": max_retries,
             "force": bool(self.force_cb.value),
+            "cookie": (self.cookie_field.value or "").strip(),
+            "menu_id": int(menu_raw) if menu_raw else None,
             "log_dir": Path("logs"),
             "log_level": logging.getLevelNamesMapping()[self.loglevel_dd.value],
         }
+
+    def _build_source(
+        self, target: str, options: dict[str, object], out_dir: Path
+    ) -> tuple[PostSource, Crawler, FailureStore]:
+        """입력에 따라 블로그/카페 클라이언트와 크롤러를 구성한다.
+
+        카페 주소면 카페 본문 파서(:func:`parse_cafe_body`)와 세션 쿠키를 주입하고,
+        아니면 기존 블로그 경로를 그대로 쓴다.
+
+        Raises:
+            InvalidBlogReference: 블로그 아이디/URL을 인식하지 못한 경우.
+            InvalidCafeReference: 카페 주소를 인식하지 못한 경우.
+        """
+        failures = FailureStore.load(out_dir)
+        client: PostSource
+        if is_cafe_reference(target):
+            ref = resolve_cafe_reference(target)
+            # 직접 입력한 쿠키가 있으면 그것을, 없으면 '쿠키 업데이트'로 저장한 쿠키를 쓴다.
+            cookie = str(options["cookie"]) or load_cookie()
+            menu_id = options["menu_id"]
+            client = NaverCafeClient(
+                ref,
+                cookie=cookie,
+                menu_id=menu_id if isinstance(menu_id, int) else None,
+                delay=float(options["delay"]),  # type: ignore[arg-type]
+                max_retries=int(options["max_retries"]),  # type: ignore[arg-type]
+            )
+            crawler = Crawler(
+                client,
+                out_dir,
+                failures,
+                force=bool(options["force"]),
+                retry_failed=self.retry_cb.value,
+                parse_body=parse_cafe_body,
+            )
+        else:
+            blog_id = resolve_blog_id(target)
+            client = NaverBlogClient(
+                blog_id,
+                delay=float(options["delay"]),  # type: ignore[arg-type]
+                max_retries=int(options["max_retries"]),  # type: ignore[arg-type]
+            )
+            crawler = Crawler(
+                client,
+                out_dir,
+                failures,
+                force=bool(options["force"]),
+                retry_failed=self.retry_cb.value,
+            )
+        return client, crawler, failures
 
     # -- UI 갱신 헬퍼(스레드에서 호출) -----------------------------------
     def _on_collect(self, count: int) -> None:
@@ -449,6 +578,22 @@ class CrawlerGUI:
             # 스레드가 조용히 죽어 이후 상태 갱신이 멈추는 것을 막고자 흡수하되,
             # 원인 추적이 가능하도록 디버그 로그로 남긴다(조용한 무시 아님).
             logger.debug("상태 텍스트 갱신 실패(창 종료 중일 수 있음)", exc_info=True)
+
+
+def _first_picked_path(result: object) -> str | None:
+    """FilePicker.pick_files 결과에서 첫 파일의 경로를 꺼낸다.
+
+    flet 버전에 따라 결과가 파일 리스트이거나 ``.files``를 가진 이벤트일 수 있어
+    두 형태를 모두 방어적으로 처리한다.
+    """
+    if result is None:
+        return None
+    files = getattr(result, "files", None)
+    if files is None:
+        files = result if isinstance(result, list) else None
+    if not files:
+        return None
+    return getattr(files[0], "path", None)
 
 
 def _view(page: ft.Page) -> None:

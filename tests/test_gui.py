@@ -13,7 +13,7 @@ import time
 import pytest
 
 import naver_blog_crawler.gui as gui_mod
-from naver_blog_crawler.gui import CrawlerGUI
+from naver_blog_crawler.gui import CrawlerGUI, _first_picked_path
 
 
 class _FakeText:
@@ -145,6 +145,32 @@ def test_ui_ticker_flushes_before_throttle_sleep(monkeypatch: pytest.MonkeyPatch
     assert "sleep" in events
     assert events.index("flush") < events.index("sleep")
     assert gui.status.value == "즉시 반영"  # type: ignore[attr-defined]
+
+
+class _FakePicked:
+    def __init__(self, path: str | None) -> None:
+        self.path = path
+
+
+def test_first_picked_path_from_list() -> None:
+    assert _first_picked_path([_FakePicked("/x/cookies.txt")]) == "/x/cookies.txt"
+
+
+def test_first_picked_path_from_files_event() -> None:
+    class _Event:
+        files = [_FakePicked("/y/cookies.json")]
+
+    assert _first_picked_path(_Event()) == "/y/cookies.json"
+
+
+def test_first_picked_path_none_and_empty() -> None:
+    assert _first_picked_path(None) is None
+    assert _first_picked_path([]) is None
+
+    class _Empty:
+        files: list[object] = []
+
+    assert _first_picked_path(_Empty()) is None
 
 
 def test_ui_ticker_drains_final_status_on_shutdown() -> None:

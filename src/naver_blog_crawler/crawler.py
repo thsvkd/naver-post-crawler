@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from .client import NaverBlogClient
 from .errors import CrawlerError, ParseError
 from .failures import FailureStore
 from .models import Post, PostMeta
 from .parser import ParsedBody, parse_post_body
+from .source import PostSource
 from .writer import find_by_log_no, target_path, write_post
 
 logger = logging.getLogger(__name__)
@@ -66,13 +66,14 @@ class Crawler:
 
     def __init__(
         self,
-        client: NaverBlogClient,
+        client: PostSource,
         out_dir: Path,
         failures: FailureStore,
         *,
         force: bool = False,
         retry_failed: bool = False,
         parse_retries: int = _DEFAULT_PARSE_RETRIES,
+        parse_body: Callable[[str], ParsedBody] = parse_post_body,
     ) -> None:
         self.client = client
         self.out_dir = out_dir
@@ -80,6 +81,8 @@ class Crawler:
         self.force = force
         self.retry_failed = retry_failed
         self._parse_retries = parse_retries
+        # 소스별 본문 파서(블로그: parse_post_body, 카페: parse_cafe_body).
+        self._parse_body = parse_body
 
     def build_plan(self, on_collect: Callable[[int], None] | None = None) -> CrawlPlan:
         """전체 메타데이터를 모아 빈 글을 거르고 과거→최근으로 정렬한다.
@@ -157,7 +160,7 @@ class Crawler:
         for attempt in range(self._parse_retries):
             html = self.client.fetch_post_html(log_no)
             try:
-                return parse_post_body(html)
+                return self._parse_body(html)
             except ParseError as exc:
                 last_exc = exc
                 logger.warning(

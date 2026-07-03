@@ -1,10 +1,15 @@
-"""CLI 재시도 결정 로직 및 중단 처리 테스트."""
+"""CLI 재시도 결정 로직·중단 처리·쿠키 출처 우선순위 테스트."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
-from naver_blog_crawler.cli import _decide_retry, _run
+import click
+import pytest
+
+import naver_blog_crawler.cli as cli_mod
+from naver_blog_crawler.cli import _decide_retry, _resolve_cli_cookie, _run
 from naver_blog_crawler.crawler import Outcome, PostResult
 from naver_blog_crawler.models import PostMeta
 
@@ -46,3 +51,27 @@ def test_run_handles_interrupt_and_keeps_partial_results() -> None:
     assert interrupted is True
     assert counts[Outcome.WRITTEN] == 2  # 중단 전까지의 결과는 보존
     assert failed == []
+
+
+def test_resolve_cli_cookie_prefers_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 문자열 쿠키가 있으면 파일·저장된 쿠키를 보지 않는다.
+    monkeypatch.setattr(cli_mod, "load_cookie", lambda: "STORED")
+    assert _resolve_cli_cookie("NID_SES=x", Path("ignored.txt")) == "NID_SES=x"
+
+
+def test_resolve_cli_cookie_reads_file(tmp_path: Path) -> None:
+    path = tmp_path / "cookies.txt"
+    path.write_text(".naver.com\tTRUE\t/\tTRUE\t0\tNID_SES\tFROMFILE\n", encoding="utf-8")
+    assert _resolve_cli_cookie(None, path) == "NID_SES=FROMFILE"
+
+
+def test_resolve_cli_cookie_bad_file_raises_bad_parameter(tmp_path: Path) -> None:
+    path = tmp_path / "bad.txt"
+    path.write_text(".google.com\tTRUE\t/\tFALSE\t0\tX\tY\n", encoding="utf-8")
+    with pytest.raises(click.BadParameter):
+        _resolve_cli_cookie(None, path)
+
+
+def test_resolve_cli_cookie_falls_back_to_stored(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli_mod, "load_cookie", lambda: "STORED")
+    assert _resolve_cli_cookie(None, None) == "STORED"

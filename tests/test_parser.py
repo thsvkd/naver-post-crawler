@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from naver_blog_crawler.errors import ParseError
-from naver_blog_crawler.parser import parse_post_body
+from naver_blog_crawler.parser import parse_cafe_body, parse_post_body
 
 FULL_POST = """
 <div class="se-main-container">
@@ -182,3 +182,68 @@ def test_legacy_unknown_component_text_is_preserved() -> None:
     assert body.has_content is True
     assert "본문 문단." in body.text
     assert "알 수 없는 컴포넌트 텍스트" in body.text
+
+
+# --- 카페 본문(parse_cafe_body) -------------------------------------------------
+
+# 카페 스마트에디터 ONE 글: 블로그와 동일한 se-main-container 경로를 재사용한다.
+CAFE_SE_ONE = """
+<div class="se-main-container">
+  <div class="se-component se-text">
+    <div class="se-text-paragraph">카페 본문 첫 줄.</div>
+  </div>
+  <div class="se-component se-image">
+    <img data-lazy-src="https://cafeptthumb/x.jpg" src="data:placeholder">
+  </div>
+</div>
+"""
+
+# 스마트에디터가 아닌 단순 HTML 본문(SE 2.0/일반). 평문 폴백으로 처리된다.
+CAFE_PLAIN = (
+    "<div>첫 문단입니다.</div>"
+    "<p>둘째 문단.</p>"
+    '<img data-lazy-src="https://img/photo.png" src="data:abc">'
+    "셋째 줄<br>넷째 줄"
+)
+
+
+def test_cafe_se_one_reuses_smarteditor_path() -> None:
+    body = parse_cafe_body(CAFE_SE_ONE)
+    assert body.has_content is True
+    assert "카페 본문 첫 줄." in body.text
+    assert "[이미지: https://cafeptthumb/x.jpg]" in body.text
+
+
+def test_cafe_plain_fallback_preserves_text_and_images_in_order() -> None:
+    body = parse_cafe_body(CAFE_PLAIN)
+    assert body.has_content is True
+    assert "첫 문단입니다." in body.text
+    assert "둘째 문단." in body.text
+    # data: URI 플레이스홀더가 아니라 실제 이미지 URL을 표기하고, 순서를 보존한다.
+    assert "[이미지: https://img/photo.png]" in body.text
+    assert body.text.index("둘째 문단.") < body.text.index("[이미지: https://img/photo.png]")
+    assert body.text.index("[이미지: https://img/photo.png]") < body.text.index("셋째 줄")
+    # <br>은 줄바꿈으로 보존된다.
+    assert "셋째 줄\n넷째 줄" in body.text
+
+
+def test_cafe_plain_image_prefers_real_url_over_data_uri_regardless_of_order() -> None:
+    # data-lazy-src가 placeholder data: URI이고 실제 URL이 src에 있는 역순 배치에서도,
+    # 속성 경계를 지켜 실제 이미지 URL을 살려야 한다(부분일치로 유실되면 안 됨).
+    html = '<img data-lazy-src="data:image/gif;base64,AAAA" src="https://real/img.png">'
+    body = parse_cafe_body(html)
+    assert "[이미지: https://real/img.png]" in body.text
+    assert "data:image" not in body.text
+
+
+def test_cafe_empty_body_has_no_content_without_raising() -> None:
+    # 블로그 parse_post_body와 달리 컨테이너가 없어도 예외를 던지지 않는다.
+    body = parse_cafe_body("<div></div>")
+    assert body.has_content is False
+    assert body.text == ""
+
+
+def test_cafe_legacy_se3_fallback() -> None:
+    body = parse_cafe_body(LEGACY_POST)
+    assert body.has_content is True
+    assert "첫 줄." in body.text

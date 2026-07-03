@@ -27,11 +27,23 @@ from rich.table import Table
 from rich.text import Text
 
 from .blog_id import resolve_blog_id
+from .cafe_client import NaverCafeClient
+from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
+from .cookie import load_cookie, parse_cookie_file
 from .crawler import Crawler, CrawlPlan, Outcome, PostResult
-from .errors import BlogNotFound, InvalidBlogReference
+from .errors import (
+    BlogNotFound,
+    CafeNotFound,
+    InvalidBlogReference,
+    InvalidCafeReference,
+    InvalidCookieFile,
+    LoginRequired,
+)
 from .failures import FailureStore
 from .log import setup_logging
+from .parser import parse_cafe_body
+from .source import PostSource
 from .writer import saved_log_nos
 
 console = Console()
@@ -54,7 +66,7 @@ _REFRESH_PER_SECOND = 8
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("blog")
+@click.argument("target")
 @click.option(
     "-o",
     "--out",
@@ -81,6 +93,24 @@ _REFRESH_PER_SECOND = 8
 )
 @click.option("--force", is_flag=True, help="이미 저장된 글도 다시 받아 덮어쓴다.")
 @click.option(
+    "--cookie",
+    default=None,
+    help="[카페] 세션 쿠키 문자열 'NID_AUT=...; NID_SES=...'. 로그인/등급 제한 게시판 접근에 필요.",
+)
+@click.option(
+    "--cookie-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="[카페] 브라우저 확장으로 내보낸 쿠키 파일(cookies.txt/JSON) 경로. --cookie 대신 쓴다.",
+)
+@click.option(
+    "--menu",
+    "menu_id",
+    type=int,
+    default=None,
+    help="[카페] 특정 게시판만 받을 때의 menuId. 미지정 시 접근 가능한 게시판 전체.",
+)
+@click.option(
     "--log-dir",
     type=click.Path(file_okay=False, path_type=Path),
     default=Path("logs"),
@@ -95,19 +125,24 @@ _REFRESH_PER_SECOND = 8
     help="파일 로그 레벨.",
 )
 def main(
-    blog: str,
+    target: str,
     out_dir: Path,
     delay: float,
     max_retries: int,
     limit: int | None,
     retry_flag: bool | None,
     force: bool,
+    cookie: str | None,
+    cookie_file: Path | None,
+    menu_id: int | None,
     log_dir: Path,
     log_level: str,
 ) -> None:
-    """네이버 블로그의 전체 글을 과거→최근 순으로 txt로 백업한다.
+    """네이버 블로그·카페의 글을 과거→최근 순으로 txt로 백업한다.
 
-    BLOG 는 블로그 아이디(winter9377)나 블로그·포스트 URL 모두 가능하다.
+    TARGET 은 블로그 아이디(winter9377)·블로그/포스트 URL이거나, 네이버 카페
+    주소(cafe.naver.com/...)다. 카페 주소면 카페 모드로 동작하며, 로그인/등급
+    제한 게시판은 --cookie(문자열)나 --cookie-file(파일)로 세션 쿠키를 주입해야 한다.
     """
     # 진행 화면(Live)과 같은 콘솔을 넘겨, 로그가 진행바 위로 흐르도록 한다.
     log_file = setup_logging(
@@ -116,25 +151,115 @@ def main(
         console=console,
     )
 
-    try:
-        blog_id = resolve_blog_id(blog)
-    except InvalidBlogReference as exc:
-        raise click.BadParameter(str(exc), param_hint="BLOG") from exc
+    if is_cafe_reference(target):
+        title, client, crawler, failures = _build_cafe(
+            target,
+            out_dir,
+            delay=delay,
+            max_retries=max_retries,
+            cookie=_resolve_cli_cookie(cookie, cookie_file),
+            menu_id=menu_id,
+        )
+    else:
+        title, client, crawler, failures = _build_blog(
+            target, out_dir, delay=delay, max_retries=max_retries
+        )
+    crawler.force = force
 
-    logger.info("백업 시작: blog_id=%s out=%s force=%s", blog_id, out_dir, force)
-    console.print(f"[bold]네이버 블로그 백업[/bold] · blog_id=[cyan]{blog_id}[/cyan]")
+    console.print(title)
     console.print(f"[dim]로그: {log_file}[/dim]")
+    _backup(client, crawler, out_dir, failures, limit=limit, retry_flag=retry_flag, force=force)
 
-    with NaverBlogClient(blog_id, delay=delay, max_retries=max_retries) as client:
-        failures = FailureStore.load(out_dir)
 
+def _build_blog(
+    target: str, out_dir: Path, *, delay: float, max_retries: int
+) -> tuple[str, NaverBlogClient, Crawler, FailureStore]:
+    """블로그 대상의 클라이언트·크롤러를 구성한다."""
+    try:
+        blog_id = resolve_blog_id(target)
+    except InvalidBlogReference as exc:
+        raise click.BadParameter(str(exc), param_hint="TARGET") from exc
+
+    logger.info("블로그 백업 시작: blog_id=%s out=%s", blog_id, out_dir)
+    client = NaverBlogClient(blog_id, delay=delay, max_retries=max_retries)
+    failures = FailureStore.load(out_dir)
+    crawler = Crawler(client, out_dir, failures)
+    title = f"[bold]네이버 블로그 백업[/bold] · blog_id=[cyan]{blog_id}[/cyan]"
+    return title, client, crawler, failures
+
+
+def _resolve_cli_cookie(cookie: str | None, cookie_file: Path | None) -> str | None:
+    """카페 세션 쿠키를 정한다: --cookie(문자열) > --cookie-file > 저장된 쿠키.
+
+    Raises:
+        click.BadParameter: --cookie-file을 해석하지 못한 경우.
+    """
+    if cookie:
+        return cookie
+    if cookie_file is not None:
+        try:
+            resolved = parse_cookie_file(cookie_file)
+        except InvalidCookieFile as exc:
+            raise click.BadParameter(str(exc), param_hint="--cookie-file") from exc
+        console.print(f"[dim]쿠키 파일에서 세션을 읽었습니다: {cookie_file}[/dim]")
+        return resolved
+    stored = load_cookie()
+    if stored:
+        console.print("[dim]저장된 쿠키를 사용합니다(GUI에서 저장한 세션).[/dim]")
+    return stored
+
+
+def _build_cafe(
+    target: str,
+    out_dir: Path,
+    *,
+    delay: float,
+    max_retries: int,
+    cookie: str | None,
+    menu_id: int | None,
+) -> tuple[str, NaverCafeClient, Crawler, FailureStore]:
+    """카페 대상의 클라이언트·크롤러를 구성한다(카페 본문 파서 주입)."""
+    try:
+        ref = resolve_cafe_reference(target)
+    except InvalidCafeReference as exc:
+        raise click.BadParameter(str(exc), param_hint="TARGET") from exc
+
+    logger.info("카페 백업 시작: ref=%s out=%s menu=%s", ref, out_dir, menu_id)
+    if not cookie:
+        console.print(
+            "[yellow]쿠키 미지정[/yellow] — 공개 게시판만 받을 수 있습니다. 로그인/등급 제한 "
+            "게시판은 --cookie(문자열)나 --cookie-file(파일)로 세션 쿠키를 주입하세요."
+        )
+    client = NaverCafeClient(
+        ref, cookie=cookie, menu_id=menu_id, delay=delay, max_retries=max_retries
+    )
+    failures = FailureStore.load(out_dir)
+    crawler = Crawler(client, out_dir, failures, parse_body=parse_cafe_body)
+    label = ref.club_url or (str(ref.cafe_id) if ref.cafe_id is not None else "?")
+    title = f"[bold]네이버 카페 백업[/bold] · [cyan]{label}[/cyan]"
+    return title, client, crawler, failures
+
+
+def _backup(
+    client: PostSource,
+    crawler: Crawler,
+    out_dir: Path,
+    failures: FailureStore,
+    *,
+    limit: int | None,
+    retry_flag: bool | None,
+    force: bool,
+) -> None:
+    """계획 수립 → 요약 → 진행 → 결과 출력까지의 공통 백업 흐름."""
+    with client:  # type: ignore[attr-defined]
         try:
             with console.status("[bold]글 목록 수집 중…[/bold]"):
-                crawler = Crawler(client, out_dir, failures, force=force)
                 plan = crawler.build_plan()
-        except BlogNotFound as exc:
-            # 형식은 맞지만 없는 블로그다. 트레이스백 대신 입력 오류로 깔끔히 안내한다.
-            raise click.BadParameter(str(exc), param_hint="BLOG") from exc
+        except (BlogNotFound, CafeNotFound) as exc:
+            # 형식은 맞지만 없는 블로그/카페다. 입력 오류로 깔끔히 안내한다.
+            raise click.BadParameter(str(exc), param_hint="TARGET") from exc
+        except LoginRequired as exc:
+            raise click.ClickException(str(exc)) from exc
 
         if limit is not None:
             plan.targets[limit:] = []
@@ -174,11 +299,14 @@ def _print_plan(plan: CrawlPlan, out_dir: Path, failures: FailureStore, *, force
     pending_failed = sum(1 for m in plan.targets if m.log_no not in saved and m.log_no in failures)
     new_posts = plan.total - already - pending_failed
 
-    console.print(
+    summary = (
         f"전체 글 [bold]{plan.total + plan.skipped_anniversary}[/bold]건 중 "
         f"대상 [bold]{plan.total}[/bold]건"
-        f" · '그날의 추억' 제외 [yellow]{plan.skipped_anniversary}[/yellow]건"
     )
+    # '그날의 추억' 자동 노출 글은 블로그에만 있다. 있을 때만 덧붙인다.
+    if plan.skipped_anniversary:
+        summary += f" · '그날의 추억' 제외 [yellow]{plan.skipped_anniversary}[/yellow]건"
+    console.print(summary)
     console.print(
         f"  새 글 [green]{new_posts}[/green] · "
         f"이미 저장 [cyan]{already}[/cyan] · "

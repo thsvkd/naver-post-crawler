@@ -33,6 +33,16 @@ _BR_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
 # 구버전 se_component 마커 클래스(언더스코어식).
 _LEGACY_COMPONENT_CLASS = "se_component"
 
+# 평문 폴백에서 블록 요소의 끝을 줄바꿈으로, <img>를 이미지 플레이스홀더로 바꾼다.
+_BLOCK_END_TAG = re.compile(r"</(?:p|div|li|h[1-6]|tr|blockquote|section)>", re.IGNORECASE)
+_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+# <img> 태그에서 이미지 URL을 뽑을 속성(우선순위 순). 앞에 (?<![\w-])로 속성 경계를
+# 강제해, "src"가 "data-lazy-src"의 부분 문자열로 잘못 매칭되지 않게 한다.
+_IMG_SRC_RES = tuple(
+    re.compile(rf'(?<![\w-]){attr}\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+    for attr in ("data-lazy-src", "src")
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ParsedBody:
@@ -67,6 +77,66 @@ def parse_post_body(html: str) -> ParsedBody:
         return _parse_legacy(legacy)
 
     raise ParseError("본문 컨테이너(se-main-container/se3_view)를 찾을 수 없습니다.")
+
+
+def parse_cafe_body(content_html: str) -> ParsedBody:
+    """카페 글 API의 ``contentHtml``에서 본문 텍스트를 추출한다.
+
+    카페 본문도 대부분 블로그와 같은 스마트에디터(SE)로 작성되므로, 블로그와
+    동일하게 스마트에디터 ONE(``se-main-container``)·구버전 SE 3.0(``se3_view``)
+    경로를 먼저 재사용한다. 둘 다 아닌 단순 에디터(SE 2.0/일반 HTML) 본문은
+    :func:`_parse_plain`으로 텍스트와 이미지만 보존해 폴백한다.
+
+    블로그의 :func:`parse_post_body`와 달리 컨테이너가 없어도 ``ParseError``를
+    던지지 않는다. 응답 구조 자체가 잘못돼 ``contentHtml``이 비어 있는 경우의
+    재시도는 상위(카페 클라이언트의 본문 조회)에서 담당한다.
+
+    Args:
+        content_html: 카페 글 API 응답의 ``result.article.contentHtml`` 조각.
+
+    Returns:
+        렌더링된 본문 텍스트와, 실제 콘텐츠가 하나라도 있는지 여부.
+    """
+    tree = HTMLParser(content_html)
+    container = tree.css_first(MAIN_CONTAINER_SELECTOR)
+    if container is not None:
+        return _parse_se_one(container)
+
+    legacy = tree.css_first(LEGACY_CONTAINER_SELECTOR)
+    if legacy is not None:
+        return _parse_legacy(legacy)
+
+    return _parse_plain(content_html)
+
+
+def _parse_plain(content_html: str) -> ParsedBody:
+    """스마트에디터가 아닌 단순 HTML 본문에서 텍스트·이미지를 보존해 렌더링한다.
+
+    블록 요소의 끝(``</p>``·``</div>`` 등)과 ``<br>``을 줄바꿈으로, ``<img>``는
+    이미지 플레이스홀더로 바꾼 뒤 나머지 태그를 걷어내 텍스트만 남긴다. 순서와
+    맥락을 최대한 보존하는 폴백이다.
+    """
+    marked = _BR_TAG.sub("\n", content_html)
+    marked = _BLOCK_END_TAG.sub("\n", marked)
+    marked = _IMG_TAG.sub(_plain_image_placeholder, marked)
+    text = _finalize(_clean(HTMLParser(marked).text()))
+    return ParsedBody(text=text, has_content=bool(text))
+
+
+def _plain_image_placeholder(match: re.Match[str]) -> str:
+    """평문 폴백에서 ``<img>`` 태그를 ``[이미지: URL]`` 플레이스홀더 텍스트로 바꾼다.
+
+    ``data-lazy-src``를 먼저 보고, 그 값이 실제 URL이 아니면(placeholder ``data:``
+    URI 등) ``src``로 넘어간다. 둘 다 쓸 만한 URL이 없으면 줄바꿈만 남긴다.
+    """
+    tag = match.group(0)
+    for pattern in _IMG_SRC_RES:
+        found = pattern.search(tag)
+        if found:
+            src = found.group(1).strip()
+            if src and not src.startswith("data:"):
+                return f"\n[이미지: {src}]\n"
+    return "\n"
 
 
 def _parse_se_one(container: Node) -> ParsedBody:
