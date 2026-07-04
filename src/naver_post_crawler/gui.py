@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -19,6 +20,7 @@ from pathlib import Path
 import flet as ft
 from rich.console import Console
 
+from . import __version__, updater
 from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
@@ -72,12 +74,18 @@ class CrawlerGUI:
         self._app_closing = threading.Event()
         self._status_msg = "대기 중"
         self._status_color: str | None = None
+        # 업데이트 확인으로 발견한 새 릴리스를 담아 둔다. None 이면 아직 확인 안 됐거나 최신.
+        self._pending_release: updater.Release | None = None
+        # 적용(다운로드~재시작) 진행 중 버튼 재클릭으로 중복 실행되는 것을 막는 재진입 가드.
+        self._applying = False
         self._build()
         # 데몬 스레드라 창을 닫으면 함께 종료된다.
         self._render_thread = threading.Thread(
             target=self._ui_ticker, name="gui-render-tick", daemon=True
         )
         self._render_thread.start()
+        # 시작 시 조용히(비대화형) 업데이트를 확인한다. 네트워크는 백그라운드로 돌린다.
+        self.page.run_thread(self._auto_check_updates)
 
     # -- UI 구성 ---------------------------------------------------------
     def _build(self) -> None:
@@ -118,6 +126,14 @@ class CrawlerGUI:
         )
 
         self.retry_cb = ft.Checkbox(label="이전 실패 글 다시 시도", value=True, visible=False)
+
+        # 현재 버전 표시 + 업데이트 확인/적용 버튼. 확인 결과에 따라 라벨이 바뀐다.
+        self.update_status = ft.Text(f"현재 버전 v{__version__}", size=12, color=_muted_color)
+        self.update_btn = ft.Button(
+            "업데이트 확인",
+            icon=ft.Icons.REFRESH,
+            on_click=lambda _e: self._on_update_click(),
+        )
 
         self.start_btn = ft.Button(
             "시작", icon=ft.Icons.PLAY_ARROW, on_click=lambda _e: self._start()
@@ -194,6 +210,12 @@ class CrawlerGUI:
             ft.Column(
                 [
                     ft.Text("네이버 블로그 크롤러", size=22, weight=ft.FontWeight.BOLD),
+                    # 현재 버전과 업데이트 버튼을 한 줄에 양 끝으로 배치한다.
+                    ft.Row(
+                        [self.update_status, self.update_btn],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
                     # 블로그 아이디와 출력 폴더는 하나의 입력 묶음이므로 사이 간격을
                     # 좁혀(6) 시각적으로 묶고, 바깥 간격(12)과 구분한다.
                     ft.Column(
@@ -289,6 +311,121 @@ class CrawlerGUI:
         self.cookie_status.color = color
         if self.cookie_status.page is not None:
             self.cookie_status.update()
+
+    # -- 업데이트 --------------------------------------------------------
+    def _set_update_status(self, message: str, color: str | None) -> None:
+        self.update_status.value = message
+        self.update_status.color = color
+        if self.update_status.page is not None:
+            self.update_status.update()
+
+    def _auto_check_updates(self) -> None:
+        """시작 시 조용히(비대화형) 업데이트를 확인한다."""
+        self._check_updates(manual=False)
+
+    def _on_update_click(self) -> None:
+        """업데이트 버튼 클릭 — 아직 미확인이면 확인을, 새 버전이 있으면 적용한다."""
+        if self._pending_release is None:
+            self._set_update_status("업데이트 확인 중…", self._muted_color)
+            self.page.run_thread(lambda: self._check_updates(manual=True))
+            return
+        if self._applying:
+            # 적용이 이미 진행 중이면 재클릭으로 중복 다운로드/적용을 시작하지 않는다.
+            return
+        self._applying = True
+        self.update_btn.disabled = True
+        if self.update_btn.page is not None:
+            self.update_btn.update()
+        self.page.run_thread(self._download_and_apply)
+
+    def _check_updates(self, manual: bool) -> None:
+        """최신 릴리스를 확인해 버튼·상태를 갱신한다(백그라운드 스레드에서 호출)."""
+        target = updater.current_target()
+        try:
+            release = updater.check_latest(__version__, target)
+        except Exception as exc:
+            logger.warning("업데이트 확인 실패", exc_info=True)
+            if manual:
+                self._set_update_status(f"업데이트 확인 실패: {exc}", ft.Colors.AMBER)
+            return
+        if release is not None:
+            self._pending_release = release
+            self.update_btn.text = f"v{release.version} 로 업데이트 후 재시작"
+            self.update_btn.icon = ft.Icons.SYSTEM_UPDATE
+            if self.update_btn.page is not None:
+                self.update_btn.update()
+            self._set_update_status(
+                f"새 버전 v{release.version} 사용 가능 (현재 v{__version__})", ft.Colors.GREEN
+            )
+        elif manual:
+            self._set_update_status(f"최신 버전입니다 (v{__version__}).", self._muted_color)
+
+    def _reset_applying(self) -> None:
+        """적용 시도가 중단·실패했을 때 재시도할 수 있도록 버튼·재진입 가드를 되돌린다."""
+        self._applying = False
+        self.update_btn.disabled = False
+        if self.update_btn.page is not None:
+            self.update_btn.update()
+
+    def _download_and_apply(self) -> None:
+        """새 릴리스를 내려받아 압축을 풀고 사이드카로 교체·재시작한다."""
+        release = self._pending_release
+        if release is None:
+            self._reset_applying()
+            return
+        # 개발 실행(비-frozen)에서는 자기 교체를 하면 안 된다(배포된 exe에서만 동작).
+        if not updater.is_packaged():
+            self._set_update_status(
+                "개발 환경에서는 업데이트를 적용하지 않습니다(배포된 exe에서만 동작).",
+                ft.Colors.AMBER,
+            )
+            self._reset_applying()
+            return
+        # 자동 적용은 현재 Windows 전용이다(다른 플랫폼의 사이드카·롤백 경로는 배포 대상이 아님).
+        if sys.platform != "win32":
+            self._set_update_status(
+                "이 플랫폼에서는 자동 적용을 지원하지 않습니다. "
+                "릴리스 페이지에서 수동으로 받아주세요.",
+                ft.Colors.AMBER,
+            )
+            self._pending_release = None
+            self._reset_applying()
+            return
+        if release.sha256 is None:
+            self._set_update_status("무결성 digest 없음 — TLS 로만 검증됩니다.", ft.Colors.AMBER)
+        dl_dir = Path(tempfile.mkdtemp(prefix="naver_update_"))
+        install = updater.install_exe()
+        extract_dir = updater.staging_dir(install)
+        try:
+            self._set_update_status(f"v{release.version} 다운로드 중… 0%", None)
+            zip_path = updater.download(release, dl_dir, progress_cb=self._download_progress)
+            self._set_update_status("압축 해제 중…", None)
+            new_exe = updater.extract(zip_path, extract_dir, expected_name=updater.APP_EXE_NAME)
+            zip_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.error("업데이트 실패", exc_info=True)
+            self._set_update_status(f"업데이트 실패: {exc}", ft.Colors.RED)
+            self._pending_release = None
+            self._reset_applying()
+            return
+        self._set_update_status("업데이트를 적용하고 재시작합니다…", ft.Colors.GREEN)
+        try:
+            self.page.update()
+        except Exception:
+            logger.debug("페이지 갱신 실패(창 종료 중일 수 있음)", exc_info=True)
+        # 상태 문구가 화면에 반영될 짧은 여유를 주고 교체·재시작을 시작한다.
+        time.sleep(0.4)
+        try:
+            updater.apply_and_restart(new_exe, app_exe=updater.APP_EXE_NAME, install_path=install)
+        except Exception as exc:
+            # 여기까지 오면 프로세스가 os._exit(0)로 종료돼야 정상이므로, 예외가 났다는 건
+            # 사이드카를 띄우지 못했다는 뜻이다. 앱은 계속 살아있으니 재시도할 수 있게 한다.
+            logger.error("업데이트 적용 실패", exc_info=True)
+            self._set_update_status(f"업데이트 적용 실패: {exc}", ft.Colors.RED)
+            self._reset_applying()
+
+    def _download_progress(self, frac: float) -> None:
+        self._set_update_status(f"다운로드 중… {int(frac * 100)}%", None)
 
     def _open_folder(self, _e: ft.ControlEvent) -> None:
         path = Path(self.out_field.value.strip() or "output").resolve()

@@ -307,6 +307,35 @@ def pack_app(build_env: dict[str, str]) -> None:
     verify_pack_artifact()
 
 
+def _current_pack_target() -> str:
+    """현재 OS의 릴리스 타깃 이름(windows/macos/linux). _pack_artifact_path와 같은 매핑."""
+    return {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}.get(
+        platform.system(), "windows"
+    )
+
+
+def compress_pack_artifact() -> None:
+    """flet pack 결과물을 릴리스 에셋 zip(dist/naver-post-crawler-<target>.zip)으로 만든다.
+
+    업데이터(naver_post_crawler.updater)가 소비하는 에셋이다. updater.extract() 계약에
+    맞춰, 단일 파일(win .exe/linux 바이너리)은 zip의 유일한 엔트리가 그 실행파일이 되게
+    하고, macOS .app 번들은 최상위 폴더 이름을 보존해 단일 디렉터리로 풀리게 한다.
+    """
+    target = _current_pack_target()
+    artifact = _pack_artifact_path()
+    zip_path = _PACK_DIST / f"{_PACK_NAME}-{target}.zip"
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        if artifact.is_dir():  # macOS .app 번들: 최상위 폴더 이름을 보존해 통째로 압축.
+            for path in sorted(artifact.rglob("*")):
+                if path.is_file():
+                    zf.write(path, arcname=str(path.relative_to(artifact.parent)))
+        else:  # win .exe / linux 바이너리: 유일한 엔트리가 실행파일 자체가 되게 한다.
+            zf.write(artifact, arcname=artifact.name)
+    info(f"릴리스 에셋: {zip_path}")
+
+
 def _download_template_zip(dest: Path) -> None:
     """flet 빌드 템플릿 zip을 받는다.
 
@@ -427,6 +456,8 @@ def main() -> int:
         info("의존성 동기화 (uv sync)")
         check(["uv", "sync"])
         pack_app(build_env)
+        # 업데이터가 소비할 릴리스 에셋(zip)을 만든다.
+        compress_pack_artifact()
         return 0
 
     system = platform.system()

@@ -26,6 +26,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
+from . import __version__, updater
 from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
@@ -66,7 +67,9 @@ _REFRESH_PER_SECOND = 8
 
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("target")
+@click.version_option(__version__, "-V", "--version", prog_name="naver-post-crawler")
+@click.argument("target", required=False)
+@click.option("--check-update", is_flag=True, help="최신 릴리스가 있는지 확인만 하고 종료한다.")
 @click.option(
     "-o",
     "--out",
@@ -125,7 +128,8 @@ _REFRESH_PER_SECOND = 8
     help="파일 로그 레벨.",
 )
 def main(
-    target: str,
+    target: str | None,
+    check_update: bool,
     out_dir: Path,
     delay: float,
     max_retries: int,
@@ -144,6 +148,27 @@ def main(
     주소(cafe.naver.com/...)다. 카페 주소면 카페 모드로 동작하며, 로그인/등급
     제한 게시판은 --cookie(문자열)나 --cookie-file(파일)로 세션 쿠키를 주입해야 한다.
     """
+    # --check-update: 최신 릴리스만 확인하고 종료한다(TARGET 불필요). 네트워크 오류는
+    # 트레이스백 대신 경고로 삼켜 크롤링 없이 조용히 끝낸다.
+    if check_update:
+        try:
+            release = updater.check_latest(__version__, updater.current_target())
+        except Exception as exc:
+            # em-dash(U+2014)는 cp949 콘솔에서 인코딩되지 않아, 리다이렉트 시 출력이
+            # UnicodeEncodeError로 죽는다. 네트워크 실패를 조용히 알리려면 ASCII 구분자를 쓴다.
+            console.print(f"[yellow]업데이트 확인 실패[/yellow]: {exc}")
+            return
+        if release is None:
+            console.print(f"현재 최신 버전입니다 (v{__version__}).")
+        else:
+            console.print(
+                f"새 버전 v{release.version} 사용 가능 (현재 v{__version__}). "
+                f"릴리스: {release.asset_url}"
+            )
+        return
+    if not target:
+        raise click.UsageError("TARGET을 지정하세요 (또는 --check-update / --version).")
+
     # 진행 화면(Live)과 같은 콘솔을 넘겨, 로그가 진행바 위로 흐르도록 한다.
     log_file = setup_logging(
         log_dir,
