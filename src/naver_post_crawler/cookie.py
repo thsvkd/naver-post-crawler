@@ -22,7 +22,7 @@ from .errors import InvalidCookieFile
 logger = logging.getLogger(__name__)
 
 # 내부 저장소 하위 디렉터리·파일 이름.
-_APP_DIR = "naver-blog-crawler"
+_APP_DIR = "naver-post-crawler"
 _COOKIE_FILE = "cafe_cookie.txt"
 
 # Netscape 포맷에서 HttpOnly 쿠키(NID_AUT 등)는 이 접두사로 위장돼 주석처럼 보인다.

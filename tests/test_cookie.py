@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from naver_blog_crawler.cookie import (
+from naver_post_crawler.cookie import (
     app_data_dir,
     load_cookie,
     parse_cookie_file,
     save_cookie,
     stored_cookie_path,
 )
-from naver_blog_crawler.errors import InvalidCookieFile
+from naver_post_crawler.errors import InvalidCookieFile
 
 # "Get cookies.txt LOCALLY" 확장이 내보내는 Netscape 형식(도메인 평문, 3줄 헤더).
 _NETSCAPE = """# Netscape HTTP Cookie File
@@ -117,7 +117,7 @@ def test_parse_filters_lookalike_domains(tmp_path: Path) -> None:
 
 def test_parse_warns_when_nid_aut_missing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     path = _write(tmp_path, "cookies.txt", ".naver.com\tTRUE\t/\tTRUE\t0\tNID_SES\tS\n")
-    with caplog.at_level("WARNING", logger="naver_blog_crawler.cookie"):
+    with caplog.at_level("WARNING", logger="naver_post_crawler.cookie"):
         result = parse_cookie_file(path)
     assert result == "NID_SES=S"
     assert "NID_AUT" in caplog.text

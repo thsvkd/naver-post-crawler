@@ -3,7 +3,7 @@
 터미널과 회전 파일 양쪽에 기록한다. ``console``(rich)이 주어지면 진행 화면과
 같은 콘솔을 쓰는 핸들러를 붙여 로그를 진행바 위로 흘려보내고, 파일에는 항상
 회전 파일 핸들러로 남긴다. 모듈들은 ``logging.getLogger(__name__)``으로
-``naver_blog_crawler`` 로거의 자식 로거를 얻어 사용하므로, 여기서 부모 로거에
+``naver_post_crawler`` 로거의 자식 로거를 얻어 사용하므로, 여기서 부모 로거에
 핸들러를 한 번만 붙인다. 에러는 호출부에서 ``exc_info``와 함께 남겨 원인
 트레이스백이 파일에 기록되게 한다.
 """
@@ -17,9 +17,9 @@ from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 
-LOGGER_NAME = "naver_blog_crawler"
+LOGGER_NAME = "naver_post_crawler"
 
-_LOG_FILENAME = "naver-blog-crawler.log"
+_LOG_FILENAME = "naver-post-crawler.log"
 _MAX_BYTES = 1_000_000
 _BACKUP_COUNT = 3
 _FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"

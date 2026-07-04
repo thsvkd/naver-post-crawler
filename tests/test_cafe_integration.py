@@ -14,12 +14,12 @@ from pathlib import Path
 
 import httpx
 
-from naver_blog_crawler.cafe_client import NaverCafeClient
-from naver_blog_crawler.cafe_ref import CafeReference
-from naver_blog_crawler.crawler import Crawler, Outcome
-from naver_blog_crawler.failures import FailureStore
-from naver_blog_crawler.parser import parse_cafe_body
-from naver_blog_crawler.writer import find_by_log_no
+from naver_post_crawler.cafe_client import NaverCafeClient
+from naver_post_crawler.cafe_ref import CafeReference
+from naver_post_crawler.crawler import Crawler, Outcome
+from naver_post_crawler.failures import FailureStore
+from naver_post_crawler.parser import parse_cafe_body
+from naver_post_crawler.writer import find_by_log_no
 
 Handler = Callable[[httpx.Request], httpx.Response]
 

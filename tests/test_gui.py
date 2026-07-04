@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-import naver_blog_crawler.gui as gui_mod
-from naver_blog_crawler.gui import CrawlerGUI, _first_picked_path
+import naver_post_crawler.gui as gui_mod
+from naver_post_crawler.gui import CrawlerGUI, _first_picked_path
 
 
 class _FakeText:

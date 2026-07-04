@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from naver_blog_crawler.models import Post, PostMeta
-from naver_blog_crawler.writer import (
+from naver_post_crawler.models import Post, PostMeta
+from naver_post_crawler.writer import (
     find_by_log_no,
     render_document,
     sanitize_title,

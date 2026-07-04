@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from naver_blog_crawler.blog_id import resolve_blog_id
-from naver_blog_crawler.errors import InvalidBlogReference
+from naver_post_crawler.blog_id import resolve_blog_id
+from naver_post_crawler.errors import InvalidBlogReference
 
 
 @pytest.mark.parametrize(

@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from naver_blog_crawler.crawler import Crawler, Outcome, _realign
-from naver_blog_crawler.errors import FetchError
-from naver_blog_crawler.failures import FailureStore
-from naver_blog_crawler.models import PostMeta
+from naver_post_crawler.crawler import Crawler, Outcome, _realign
+from naver_post_crawler.errors import FetchError
+from naver_post_crawler.failures import FailureStore
+from naver_post_crawler.models import PostMeta
 
 _VALID_HTML = (
     '<div class="se-main-container">'

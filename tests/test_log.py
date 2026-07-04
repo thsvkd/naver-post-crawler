@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 
-from naver_blog_crawler.log import LOGGER_NAME, setup_logging
+from naver_post_crawler.log import LOGGER_NAME, setup_logging
 
 
 def test_setup_creates_log_file_and_writes(tmp_path: Path) -> None:

@@ -1,8 +1,8 @@
 """글 소스(블로그·카페)가 만족해야 하는 공통 계약.
 
-:class:`~naver_blog_crawler.crawler.Crawler`는 이 프로토콜만 알면 되므로,
-블로그(:class:`~naver_blog_crawler.client.NaverBlogClient`)와
-카페(:class:`~naver_blog_crawler.cafe_client.NaverCafeClient`) 클라이언트를
+:class:`~naver_post_crawler.crawler.Crawler`는 이 프로토콜만 알면 되므로,
+블로그(:class:`~naver_post_crawler.client.NaverBlogClient`)와
+카페(:class:`~naver_post_crawler.cafe_client.NaverCafeClient`) 클라이언트를
 같은 오케스트레이션으로 다룰 수 있다.
 """
 

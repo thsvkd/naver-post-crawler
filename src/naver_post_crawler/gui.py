@@ -601,7 +601,7 @@ def _view(page: ft.Page) -> None:
 
 
 def main() -> None:
-    """GUI 실행 진입점(``naver-blog-crawler-gui``)."""
+    """GUI 실행 진입점(``naver-post-crawler-gui``)."""
     ft.run(_view)
 
 

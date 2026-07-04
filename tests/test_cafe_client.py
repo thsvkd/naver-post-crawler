@@ -13,10 +13,10 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from naver_blog_crawler.cafe_client import NaverCafeClient, _write_ms
-from naver_blog_crawler.cafe_ref import CafeReference
-from naver_blog_crawler.errors import CafeNotFound, LoginRequired, ParseError
-from naver_blog_crawler.models import PostMeta
+from naver_post_crawler.cafe_client import NaverCafeClient, _write_ms
+from naver_post_crawler.cafe_ref import CafeReference
+from naver_post_crawler.errors import CafeNotFound, LoginRequired, ParseError
+from naver_post_crawler.models import PostMeta
 
 Handler = Callable[[httpx.Request], httpx.Response]
 

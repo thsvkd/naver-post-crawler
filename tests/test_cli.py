@@ -8,10 +8,10 @@ from pathlib import Path
 import click
 import pytest
 
-import naver_blog_crawler.cli as cli_mod
-from naver_blog_crawler.cli import _decide_retry, _resolve_cli_cookie, _run
-from naver_blog_crawler.crawler import Outcome, PostResult
-from naver_blog_crawler.models import PostMeta
+import naver_post_crawler.cli as cli_mod
+from naver_post_crawler.cli import _decide_retry, _resolve_cli_cookie, _run
+from naver_post_crawler.crawler import Outcome, PostResult
+from naver_post_crawler.models import PostMeta
 
 
 def test_decide_retry_force_is_false() -> None:

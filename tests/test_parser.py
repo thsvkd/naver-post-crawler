@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from naver_blog_crawler.errors import ParseError
-from naver_blog_crawler.parser import parse_cafe_body, parse_post_body
+from naver_post_crawler.errors import ParseError
+from naver_post_crawler.parser import parse_cafe_body, parse_post_body
 
 FULL_POST = """
 <div class="se-main-container">

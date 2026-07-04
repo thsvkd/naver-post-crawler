@@ -50,9 +50,9 @@ _ORG = "com.thsvkd"
 
 # `flet pack`(PyInstaller) 단일 실행파일 빌드 설정.
 # 진입점은 flet build와 같은 셔임(src/main.py)이다. pack은 이 스크립트의 디렉터리
-# (src/)를 import 경로에 올리므로 naver_blog_crawler 패키지를 그대로 찾을 수 있다.
+# (src/)를 import 경로에 올리므로 naver_post_crawler 패키지를 그대로 찾을 수 있다.
 _PACK_ENTRY = REPO_ROOT / "src" / "main.py"
-_PACK_NAME = "naver-blog-crawler"  # 생성될 실행파일 이름(flet build 결과물과 동일)
+_PACK_NAME = "naver-post-crawler"  # 생성될 실행파일 이름(flet build 결과물과 동일)
 _PACK_DIST = REPO_ROOT / "dist"  # 단일 실행파일이 놓일 디렉터리
 # flet pack은 cwd/build 디렉터리를 통째로 지운다. flet build 결과물(build/windows)을
 # 보호하려고 pack은 전용 작업 디렉터리에서 돌린다(그 안의 build/만 정리됨).

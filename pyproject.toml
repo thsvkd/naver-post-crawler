@@ -1,7 +1,7 @@
 [project]
-name = "naver-blog-crawler"
+name = "naver-post-crawler"
 version = "0.1.0"
-description = "네이버 블로그의 전체 글을 과거→최근 순으로 txt 파일로 백업하는 크롤러"
+description = "네이버 블로그·카페의 글을 과거→최근 순으로 txt 파일로 백업하는 크롤러"
 readme = "README.md"
 authors = [{ name = "thsvkd", email = "thsxogud1123@gmail.com" }]
 requires-python = ">=3.14"
@@ -17,8 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-naver-blog-crawler = "naver_blog_crawler.cli:main"
-naver-blog-crawler-gui = "naver_blog_crawler.gui:main"
+naver-post-crawler = "naver_post_crawler.cli:main"
+naver-post-crawler-gui = "naver_post_crawler.gui:main"
 
 [build-system]
 requires = ["uv_build>=0.9.27,<0.10.0"]
@@ -46,7 +46,7 @@ addopts = "-q"
 [tool.flet.app]
 # src-layout이므로 flet build가 src/ 아래에서 진입 모듈을 찾도록 지정한다.
 # (app.path는 CLI 옵션이 없어 pyproject.toml이 유일한 설정 위치다.)
-# module은 점을 확장자 구분자로 다루므로 dotted 패키지 경로(naver_blog_crawler.gui)는
-# naver_blog_crawler.py를 찾다 실패한다. 앱 루트의 main.py 셔임을 진입점으로 둔다.
+# module은 점을 확장자 구분자로 다루므로 dotted 패키지 경로(naver_post_crawler.gui)는
+# naver_post_crawler.py를 찾다 실패한다. 앱 루트의 main.py 셔임을 진입점으로 둔다.
 module = "main"
 path = "src"

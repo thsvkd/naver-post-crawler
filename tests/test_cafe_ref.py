@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from naver_blog_crawler.cafe_ref import (
+from naver_post_crawler.cafe_ref import (
     CafeReference,
     is_cafe_reference,
     resolve_cafe_reference,
 )
-from naver_blog_crawler.errors import InvalidCafeReference
+from naver_post_crawler.errors import InvalidCafeReference
 
 
 @pytest.mark.parametrize(

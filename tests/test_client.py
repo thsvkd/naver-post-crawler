@@ -5,9 +5,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from naver_blog_crawler.client import NaverBlogClient, _is_blog_missing, _parse_meta
-from naver_blog_crawler.errors import BlogNotFound, ParseError
-from naver_blog_crawler.models import PostMeta
+from naver_post_crawler.client import NaverBlogClient, _is_blog_missing, _parse_meta
+from naver_post_crawler.errors import BlogNotFound, ParseError
+from naver_post_crawler.models import PostMeta
 
 _NOT_EXIST_BODY = {
     "isSuccess": False,

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from naver_blog_crawler.errors import CrawlerError
-from naver_blog_crawler.failures import FailureStore
-from naver_blog_crawler.models import PostMeta
-from naver_blog_crawler.writer import saved_log_nos
+from naver_post_crawler.errors import CrawlerError
+from naver_post_crawler.failures import FailureStore
+from naver_post_crawler.models import PostMeta
+from naver_post_crawler.writer import saved_log_nos
 
 _META = PostMeta(log_no=123, title="실패한 글", add_date_ms=1692576000000, is_anniversary=False)
 
