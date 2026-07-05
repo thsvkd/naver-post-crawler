@@ -26,6 +26,7 @@ from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
 from .cookie import load_cookie, parse_cookie_file, save_cookie
+from .cookie_login import HELPER_FLAG, login_and_capture, run_helper
 from .crawler import Crawler, Outcome
 from .errors import (
     CrawlerError,
@@ -166,6 +167,10 @@ class CrawlerGUI:
             can_reveal_password=True,
             expand=True,
         )
+        # 앱 안에서 웹뷰로 직접 로그인해 세션 쿠키를 자동 수거한다(확장/파일 불필요).
+        self.cookie_login_btn = ft.Button(
+            "네이버 로그인", icon=ft.Icons.LOGIN, on_click=self._cookie_login
+        )
         self.cookie_update_btn = ft.Button(
             "쿠키 업데이트", icon=ft.Icons.UPLOAD_FILE, on_click=self._pick_cookie_file
         )
@@ -184,7 +189,11 @@ class CrawlerGUI:
                                 [
                                     self.cookie_field,
                                     ft.Row(
-                                        [self.cookie_update_btn, self.cookie_status],
+                                        [
+                                            self.cookie_login_btn,
+                                            self.cookie_update_btn,
+                                            self.cookie_status,
+                                        ],
                                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                                         spacing=12,
                                     ),
@@ -298,6 +307,41 @@ class CrawlerGUI:
         if self.cookie_field.page is not None:
             self.cookie_field.update()
         self._set_cookie_status("쿠키 저장됨 — 카페 백업에 자동 사용됩니다. ✓", ft.Colors.GREEN)
+
+    def _cookie_login(self, _e: ft.ControlEvent) -> None:
+        """'네이버 로그인' 버튼 — 로그인 웹뷰 헬퍼를 오프스레드로 띄운다.
+
+        헬퍼(pywebview)는 별도 프로세스에서 몇 분간 블로킹될 수 있으므로 UI 스레드가
+        아니라 백그라운드에서 실행한다(크롤링과 동일한 page.run_thread 패턴). 진행 중
+        재클릭은 로그인 창이 여러 개 뜨지 않도록 무시한다(_on_update_click의 재진입 가드와 동일).
+        """
+        if getattr(self, "_cookie_login_busy", False):
+            return
+        self._cookie_login_busy = True
+        self.page.run_thread(self._run_cookie_login)
+
+    def _run_cookie_login(self) -> None:
+        """헬퍼로 로그인 세션 쿠키를 받아 저장한다(백그라운드 스레드).
+
+        헤더를 얻으면 내부 저장소에 저장하고, 실패/취소면 저장하지 않아 기존 쿠키를
+        보존한다. 파일 경로(_update_cookie)와 같은 상태 텍스트로 결과를 알린다.
+        """
+        try:
+            header = login_and_capture()
+            if header:
+                save_cookie(header)
+                self._set_cookie_status(
+                    "네이버 로그인 완료 — 쿠키를 저장했습니다. 카페 백업에 자동 사용됩니다. ✓",
+                    ft.Colors.GREEN,
+                )
+            else:
+                self._set_cookie_status(
+                    "네이버 로그인이 취소되었거나 실패했습니다. 기존 쿠키는 그대로 둡니다.",
+                    ft.Colors.RED,
+                )
+        finally:
+            # 다음 클릭이 다시 로그인 창을 띄울 수 있도록 진행 플래그를 해제한다.
+            self._cookie_login_busy = False
 
     def _refresh_cookie_status(self) -> None:
         """저장된 쿠키 유무를 상태 텍스트에 반영한다."""
@@ -738,7 +782,14 @@ def _view(page: ft.Page) -> None:
 
 
 def main() -> None:
-    """GUI 실행 진입점(``naver-post-crawler-gui``)."""
+    """GUI 실행 진입점(``naver-post-crawler-gui``).
+
+    헬퍼 모드(:data:`~naver_post_crawler.cookie_login.HELPER_FLAG`)로 재실행되면 GUI
+    대신 로그인 웹뷰 헬퍼를 띄운다. dev·flet pack 모두 이 진입점을 통과하므로 여기서
+    한 번에 분기한다.
+    """
+    if HELPER_FLAG in sys.argv:
+        raise SystemExit(run_helper())
     ft.run(_view)
 
 

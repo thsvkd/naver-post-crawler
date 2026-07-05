@@ -9,6 +9,7 @@ import pytest
 
 from naver_post_crawler.cookie import (
     app_data_dir,
+    format_cookie_header,
     load_cookie,
     parse_cookie_file,
     save_cookie,
@@ -170,3 +171,33 @@ def test_app_data_dir_uses_flet_storage_env(
     monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(target))
     assert app_data_dir() == target
     assert target.exists()  # 없으면 만든다
+
+
+# -- 웹뷰 로그인 헬퍼와 공유하는 포맷/필터 계층(format_cookie_header) --------------------
+# 파일 경로(parse_cookie_file)와 웹뷰 경로(cookie_login.py)가 naver 필터 + 조인 로직을
+# 공유하도록 뽑아낸 SSoT. _select_naver의 필터·중복 제거 규칙을 그대로 보존해야 한다.
+
+
+def test_format_cookie_header_filters_dedups_and_joins() -> None:
+    # covers: Test-1
+    triples = [
+        ("NID_AUT", "AUTVALUE", ".naver.com"),
+        ("NID_SES", "SESVALUE", "cafe.naver.com"),  # 하위 도메인도 포함
+        ("NID_SES", "STALE", ".naver.com"),  # 같은 이름 중복 → 먼저 나온 값 유지
+        ("OTHER", "X", ".google.com"),  # 비-naver 도메인은 제외
+    ]
+    assert format_cookie_header(triples) == "NID_AUT=AUTVALUE; NID_SES=SESVALUE"
+
+
+def test_format_cookie_header_returns_empty_string_when_no_naver_cookies() -> None:
+    # covers: Test-2
+    triples = [("OTHER", "X", ".google.com")]
+    assert format_cookie_header(triples) == ""
+
+
+def test_parse_cookie_file_still_raises_when_no_naver_cookies(tmp_path: Path) -> None:
+    # covers: Test-2 (회귀 가드: format_cookie_header 추출 후에도 파일 경로는 여전히
+    # naver 쿠키가 하나도 없으면 InvalidCookieFile을 던져야 한다)
+    path = _write(tmp_path, "cookies.txt", ".google.com\tTRUE\t/\tFALSE\t0\tX\tY\n")
+    with pytest.raises(InvalidCookieFile):
+        parse_cookie_file(path)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 
+import flet as ft
 import pytest
 
 import naver_post_crawler.gui as gui_mod
@@ -184,3 +185,169 @@ def test_ui_ticker_drains_final_status_on_shutdown() -> None:
 
     assert gui.status.value == "완료"  # type: ignore[attr-defined]
     assert gui.status.color == "green"  # type: ignore[attr-defined]
+
+
+# -- 앱 내 웹뷰 네이버 로그인 버튼 배선 ---------------------------------------------------
+# 실제 ft.Page 없이 실제 컨트롤을 만들면 미부착 컨트롤의 ``.page`` 접근이 예외를
+# 던지므로(RuntimeError), _build()가 건드리는 표면만 흉내 내는 대역 페이지를 쓴다.
+
+
+class _FakeWindow:
+    """``page.window`` 대역 — 폭/높이 등 속성 대입만 받는다."""
+
+
+class _FakeBuildPage:
+    """``ft.Page`` 대역 — ``_build()``가 건드리는 표면(속성 대입·``services``·``add``)만
+    흉내 낸다. 진짜 페이지 연결이 없으면 실제 컨트롤의 ``.page`` 접근 자체가 예외를
+    던지므로, ``_build()`` 끝의 ``_refresh_failures``/``_refresh_cookie_status``(파일·
+    환경을 건드림)는 호출부(테스트)에서 개별적으로 no-op 처리한다.
+    """
+
+    def __init__(self) -> None:
+        self.services: list[object] = []
+        self.window = _FakeWindow()
+        self.added: tuple[object, ...] = ()
+
+    def add(self, *controls: object) -> None:
+        self.added = controls
+
+
+def _bare_gui_with_build() -> CrawlerGUI:
+    """``_build()``까지 실제로 실행해 컨트롤 배선을 검증하되, 파일/환경을 건드리는
+    새로고침 호출은 no-op으로 막은 인스턴스를 만든다."""
+    gui = object.__new__(CrawlerGUI)
+    gui.page = _FakeBuildPage()  # type: ignore[assignment]
+    gui._refresh_failures = lambda: None  # type: ignore[method-assign]
+    gui._refresh_cookie_status = lambda: None  # type: ignore[method-assign]
+    gui._build()
+    return gui
+
+
+def _walk_controls(node: object, seen: set[int] | None = None):
+    """``page.add``에 넘긴 컨트롤 트리를 재귀 순회해 모든 컨트롤을 낸다.
+
+    버튼을 만들기만 하고 트리에 붙이지 않으면 화면에 안 보이므로, 실제 마운트
+    여부를 확인하려면 존재·배선만이 아니라 트리 도달 가능성을 봐야 한다.
+    """
+    if seen is None:
+        seen = set()
+    if node is None or isinstance(node, str) or id(node) in seen:
+        return
+    seen.add(id(node))
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _walk_controls(item, seen)
+        return
+    yield node
+    for attr in ("controls", "content", "title", "subtitle", "leading", "trailing", "actions"):
+        yield from _walk_controls(getattr(node, attr, None), seen)
+
+
+def test_advanced_options_has_naver_login_button_wired_to_handler() -> None:
+    # covers: Test-7
+    gui = _bare_gui_with_build()
+
+    assert hasattr(gui, "_cookie_login")
+    assert gui.cookie_login_btn.content == "네이버 로그인"  # type: ignore[attr-defined]
+    assert gui.cookie_login_btn.on_click == gui._cookie_login  # type: ignore[attr-defined]
+    # 버튼이 실제로 빌드된 컨트롤 트리(고급 옵션)에 마운트됐는지 — 존재·배선만으로는
+    # "만들었지만 안 붙임"을 못 잡으므로 트리 도달 가능성을 단언한다.
+    mounted = list(_walk_controls(gui.page.added))  # type: ignore[attr-defined]
+    assert any(c is gui.cookie_login_btn for c in mounted)  # type: ignore[attr-defined]
+
+
+class _FakeRunThreadPage:
+    """``page.run_thread`` 대역 — 대상 콜러블을 기록만 하고 실행하지 않는다.
+
+    실제로 실행해 버리면 오프스레드 디스패치인지(동기 호출이 아닌지) 구분할 수
+    없으므로, 호출을 기록만 하는 것이 검증의 핵심이다.
+    """
+
+    def __init__(self) -> None:
+        self.run_thread_calls: list[object] = []
+
+    def run_thread(self, target: object, *args: object) -> None:
+        self.run_thread_calls.append(target)
+
+
+def _bare_gui_with_run_thread_page() -> tuple[CrawlerGUI, _FakeRunThreadPage]:
+    gui = object.__new__(CrawlerGUI)
+    fake_page = _FakeRunThreadPage()
+    gui.page = fake_page  # type: ignore[assignment]
+    return gui, fake_page
+
+
+def test_cookie_login_dispatches_off_thread_without_synchronous_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-8
+    gui, fake_page = _bare_gui_with_run_thread_page()
+    login_calls: list[object] = []
+    save_calls: list[object] = []
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: login_calls.append(1))
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda *a, **kw: save_calls.append(a))
+
+    gui._cookie_login(object())
+
+    # 오프스레드로 _run_cookie_login 하나만 예약하고, UI 스레드에서 캡처/저장을
+    # 동기 실행하지 않는다.
+    assert fake_page.run_thread_calls == [gui._run_cookie_login]
+    assert login_calls == []
+    assert save_calls == []
+
+
+def test_run_cookie_login_saves_and_reports_success_when_header_captured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-8
+    gui, _ = _bare_gui_with_run_thread_page()
+    status_calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        gui, "_set_cookie_status", lambda msg, color: status_calls.append((msg, color))
+    )
+    save_calls: list[str] = []
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: "NID_AUT=a; NID_SES=b")
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda cookie, *a, **kw: save_calls.append(cookie))
+
+    gui._run_cookie_login()
+
+    assert save_calls == ["NID_AUT=a; NID_SES=b"]
+    assert status_calls, "성공 상태 갱신이 있어야 한다"
+    assert status_calls[-1][1] == ft.Colors.GREEN
+
+
+def test_run_cookie_login_skips_save_and_reports_failure_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-8
+    gui, _ = _bare_gui_with_run_thread_page()
+    status_calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        gui, "_set_cookie_status", lambda msg, color: status_calls.append((msg, color))
+    )
+    save_calls: list[str] = []
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: None)
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda cookie, *a, **kw: save_calls.append(cookie))
+
+    gui._run_cookie_login()
+
+    # None이면 저장하지 않아 기존 쿠키를 보존한다.
+    assert save_calls == []
+    assert status_calls, "실패/취소 상태 갱신이 있어야 한다"
+    assert status_calls[-1][1] == ft.Colors.RED
+
+
+def test_cookie_login_ignores_reentrant_click_while_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-9 (R3 반영 — 진행 중 재클릭이 로그인 창을 또 띄우지 않게 재진입 가드)
+    gui, fake_page = _bare_gui_with_run_thread_page()
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: None)
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda *a, **kw: None)
+
+    gui._cookie_login(object())
+    # 첫 클릭이 아직 진행 중(fake run_thread가 _run_cookie_login을 실행하지 않아 플래그
+    # 미해제)일 때의 재클릭은 무시돼 두 번째 디스패치가 없어야 한다.
+    gui._cookie_login(object())
+
+    assert fake_page.run_thread_calls == [gui._run_cookie_login]

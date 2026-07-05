@@ -49,17 +49,30 @@ def parse_cookie_file(path: str | Path) -> str:
         raise InvalidCookieFile(f"쿠키 파일이 비어 있습니다: {file}")
 
     cookies = _parse_json(text) if text[0] in "[{" else _parse_netscape(text)
-    naver = _select_naver(cookies)
-    if not naver:
+    header = format_cookie_header(cookies)
+    if not header:
         raise InvalidCookieFile(
             "쿠키 파일에서 naver.com 쿠키를 찾지 못했습니다. "
             "네이버에 로그인한 상태에서 내보냈는지 확인하세요."
         )
-    if not any(name == "NID_AUT" for name, _ in naver):
+    if not any(name == "NID_AUT" for name, _, domain in cookies if _is_naver_domain(domain)):
         logger.warning(
             "쿠키 파일에 NID_AUT가 없습니다. 로그인 세션이 아닐 수 있어 "
             "등급 제한 게시판 접근이 실패할 수 있습니다."
         )
+    return header
+
+
+def format_cookie_header(cookies: list[tuple[str, str, str]]) -> str:
+    """``(name, value, domain)`` 목록에서 naver.com 쿠키만 골라 헤더 문자열로 만든다.
+
+    naver.com(하위 도메인 포함) 쿠키만 이름 기준 중복 없이(먼저 나온 값 유지) 뽑아
+    ``"name=value; name=value"``로 조인한다. naver 쿠키가 하나도 없으면 빈 문자열.
+
+    쿠키 파일 경로(:func:`parse_cookie_file`)와 웹뷰 로그인 경로
+    (:mod:`naver_post_crawler.cookie_login`)가 이 필터·조인 규칙을 공유하는 SSoT다.
+    """
+    naver = _select_naver(cookies)
     return "; ".join(f"{name}={value}" for name, value in naver)
 
 

@@ -14,6 +14,12 @@ dependencies = [
     "httpx>=0.28.1",
     "rich>=15.0.0",
     "selectolax>=0.4.9",
+    # 앱 내 웹뷰 네이버 로그인(cookie_login). pywebview로 네이티브 웹뷰를 별도
+    # 프로세스에 띄워 HttpOnly 세션 쿠키를 수거한다. Windows 백엔드(WebView2)는
+    # pythonnet으로 .NET 상호운용하므로 win32에서만 함께 설치한다(WebView2 런타임은
+    # Win11 기본 탑재). mac/Linux 백엔드(pyobjc/PyGObject)는 Phase 2에서 추가한다.
+    "pywebview>=6.0",
+    "pythonnet>=3.0 ; sys_platform == 'win32'",
 ]
 
 [project.scripts]
