@@ -48,6 +48,12 @@ from _common import REPO_ROOT, check, fail, info, require_uv
 _PRODUCT = "Naver Blog Backup"
 _ORG = "com.thsvkd"
 
+# flet build는 기존 build/<target>를 통째로 지우고 새 결과물을 복사한다. Windows에서
+# 갓 빌드된 실행파일/DLL을 백신 실시간 검사·인덱서가 잠깐 잡고 있으면 그 삭제가
+# 실패하므로, flet에 넘기기 전에 짧은 간격으로 몇 번 재시도하며 선제 정리한다.
+_CLEAN_RETRIES = 5
+_CLEAN_RETRY_DELAY_S = 0.8
+
 # `flet pack`(PyInstaller) 단일 실행파일 빌드 설정.
 # 진입점은 flet build와 같은 셔임(src/main.py)이다. pack은 이 스크립트의 디렉터리
 # (src/)를 import 경로에 올리므로 naver_post_crawler 패키지를 그대로 찾을 수 있다.
@@ -230,6 +236,37 @@ def verify_artifact(target: str) -> None:
         if not out_dir.exists() or not any(out_dir.iterdir()):
             fail(f"빌드가 끝났지만 build/{target} 에 결과물이 없습니다.")
         info(f"완료: build/{target}/ 를 확인하세요.")
+
+
+def _clean_prior_build_output(target: str) -> None:
+    """flet build 직전에 기존 build/<target> 출력 폴더를 선제 정리한다(재시도 포함).
+
+    flet의 copy_build_output은 새 결과물을 복사하기 전에 기존 build/<target>를
+    shutil.rmtree로 통째로 지운다. 그런데 직전 빌드가 갓 만든 실행파일/DLL을 Windows
+    Defender 실시간 검사나 검색 인덱서가 잠깐 잡고 있으면 그 삭제가 WinError 145
+    (디렉터리가 비어 있지 않음)로 실패하고, 중간까지 지운 탓에 출력물이 깨진 채 남는다
+    (특히 빌드를 연달아 돌릴 때). 여기서 먼저 지워 두면 flet의 rmtree는 지울 게 없어
+    레이스를 피한다. 일시적 잠금은 짧은 간격으로 재시도하고, 끝내 잠겨 있으면(예:
+    이전 빌드로 만든 앱이 실행 중) flet의 무방비 트레이스백 대신 원인을 짚어 중단한다.
+    """
+    out_dir = REPO_ROOT / "build" / target
+    if not out_dir.exists():
+        return
+    for _attempt in range(_CLEAN_RETRIES):
+        try:
+            shutil.rmtree(out_dir)
+            return
+        except FileNotFoundError:
+            # 재시도 사이 외부(백신 격리 등)에서 폴더가 통째로 사라졌으면 목표(부재) 달성.
+            return
+        except OSError:
+            if _attempt < _CLEAN_RETRIES - 1:
+                time.sleep(_CLEAN_RETRY_DELAY_S)
+    fail(
+        f"기존 빌드 출력을 지울 수 없습니다(잠김): {out_dir}\n"
+        "  이전 빌드로 만든 앱이 실행 중이면 모두 닫은 뒤 다시 시도하세요.\n"
+        "  (백신 실시간 검사나 파일 탐색기가 파일을 잡고 있을 수도 있습니다.)"
+    )
 
 
 def _pack_artifact_path() -> Path:
@@ -477,6 +514,10 @@ def main() -> int:
     check(["uv", "sync"])
 
     template_root = prepare_portable_template()
+
+    # flet의 copy_build_output이 기존 build/<target>를 무방비 shutil.rmtree로 지우다
+    # Windows 파일 잠금에 걸리면 출력물을 깨뜨린 채 죽는다. 미리 재시도로 정리해 둔다.
+    _clean_prior_build_output(target)
 
     info(f"flet build {target}")
     check(
