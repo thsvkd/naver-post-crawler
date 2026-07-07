@@ -269,7 +269,7 @@ def extract(
         # 폴더 배포 zip(naver-post-crawler/<exe>): 폴더 안에서 실행 파일을 찾는다.
         inner = [p for p in entry.iterdir() if p.is_file()]
         if len(inner) != 1:
-            raise RuntimeError("에셋 폴더 안에 실행 파일이 없습니다")
+            raise RuntimeError("에셋 폴더 안에 실행 파일이 정확히 하나여야 합니다")
         entry = inner[0]
     if not entry.is_file():
         raise RuntimeError("에셋 엔트리가 파일이 아닙니다")
