@@ -290,17 +290,16 @@ uv run naver-post-crawler https://cafe.naver.com/mycafe --cookie-file "cafe_cook
 
 쿠키 출처 우선순위는 `--cookie`(문자열) → `--cookie-file`(파일) → GUI에서 저장한 쿠키 순입니다.
 
-**빌드 (네이티브 데스크톱 앱)**
+**빌드 (단일 실행파일)**
 
-실행 OS를 감지하여 빌드합니다(Windows/macOS/Linux 공통). Flutter SDK와 플랫폼별 툴체인은 스크립트가 가능한 한 자동으로 준비합니다.
+실행 OS를 감지하여 `flet pack`(PyInstaller)으로 단일 실행파일을 만듭니다(Windows/macOS/Linux 공통). Flutter/네이티브 툴체인은 필요 없습니다.
 
 ```bash
-python scripts/build.py            # 폴더째 배포하는 네이티브 앱 (build/<platform>/)
-python scripts/build.py --onefile  # 단일 실행파일 (dist/naver-post-crawler.exe)
+python scripts/build.py
 ```
 
-- `--onefile`은 DLL·폴더 없이 단일 exe를 생성하여 배포가 간단하지만, 백신 오탐·느린 최초 실행·큰 용량 등의 단점이 있습니다. 이 단일 exe가 릴리스에서 제공되는 실행 파일이며, `dist/naver-post-crawler-windows.zip`으로 압축되어 GitHub Releases에 업로드되고 앱의 자동 업데이트가 이를 사용합니다.
-- 사전 준비(Windows): Visual Studio "Desktop development with C++" 워크로드가 필요합니다(미설치 시 스크립트가 설치를 안내). 자세한 내용은 `scripts/build.py` 주석을 참고하십시오.
+- 결과물: `dist/naver-post-crawler.exe`(단일 실행파일)와 `dist/naver-post-crawler-windows.zip`(GitHub Releases에 업로드되어 앱의 자동 업데이트가 사용하는 릴리스 에셋). zip을 풀면 `naver-post-crawler/naver-post-crawler.exe` 구조가 됩니다.
+- 앱 데이터는 실행 파일 옆 `storage/`에 저장됩니다(포터블 동작).
 
 **테스트**
 

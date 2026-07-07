@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -171,6 +172,34 @@ def test_app_data_dir_uses_flet_storage_env(
     monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(target))
     assert app_data_dir() == target
     assert target.exists()  # 없으면 만든다
+
+
+def test_app_data_dir_uses_exe_adjacent_storage_when_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FLET_APP_STORAGE_DATA", raising=False)
+    fake_exe = tmp_path / "naver-post-crawler" / "naver-post-crawler.exe"
+    fake_exe.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+    result = app_data_dir()
+
+    assert result == fake_exe.parent / "storage"
+    assert result.exists()  # 없으면 만든다
+
+
+def test_app_data_dir_prefers_flet_storage_env_over_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "flet-storage"
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(target))
+    fake_exe = tmp_path / "naver-post-crawler" / "naver-post-crawler.exe"
+    fake_exe.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+
+    assert app_data_dir() == target
 
 
 # -- 웹뷰 로그인 헬퍼와 공유하는 포맷/필터 계층(format_cookie_header) --------------------

@@ -142,12 +142,17 @@ def _select_naver(cookies: list[tuple[str, str, str]]) -> list[tuple[str, str]]:
 def app_data_dir() -> Path:
     """앱 내부 저장소 디렉터리(없으면 만든다).
 
-    패키징된 앱은 flet이 주는 포터블 저장 경로(``FLET_APP_STORAGE_DATA``)를, 개발
-    실행에서는 플랫폼별 사용자 데이터 경로를 쓴다.
+    flet이 주는 포터블 저장 경로(``FLET_APP_STORAGE_DATA``)가 있으면 그것을, 없고
+    PyInstaller 단일 exe로 frozen된 실행(``scripts/build.py``의 유일한 빌드 경로)이면
+    실행 파일 옆 ``storage/``를 쓴다. 폴더째 옮겨도 데이터가 따라오는 포터블 동작이며,
+    updater가 exe를 교체해도 이 폴더는 그대로 유지된다. 그 외(개발 실행)에는 플랫폼별
+    사용자 데이터 경로를 쓴다.
     """
     flet_storage = os.environ.get("FLET_APP_STORAGE_DATA")
     if flet_storage:
         base = Path(flet_storage)
+    elif getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent / "storage"
     elif sys.platform == "win32":
         root = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         base = Path(root) / _APP_DIR

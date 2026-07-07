@@ -6,7 +6,7 @@ staging 에 압축 해제 → 사이드카 스크립트로 실행 중 exe 교체
 Windows 에서 실행 중인 exe 는 잠기므로 in-place 덮어쓰기가 안 된다. 그래서 번들 밖
 (temp)의 사이드카 프로세스가 "앱 종료 대기 → 파일 rename 스왑 → 재실행 → 롤백"을 수행한다.
 
-이 프로젝트는 ``flet pack``(PyInstaller) 단일 exe 로 배포하므로(scripts/build.py --onefile),
+이 프로젝트는 ``flet pack``(PyInstaller) 단일 exe 로 배포하므로(scripts/build.py),
 설치 위치는 실행 중인 exe 파일 자체(:func:`install_exe`)이고, 교체 대상도 폴더가 아니라
 그 exe 파일 하나다. 개발 실행(비-frozen)에서는 :func:`is_packaged` 가드로 자기 교체를 막는다.
 
