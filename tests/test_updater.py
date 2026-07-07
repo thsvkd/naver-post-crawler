@@ -294,9 +294,7 @@ def test_extract_folder_wrapped_renames_to_expected_name(tmp_path: Path) -> None
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("naver-post-crawler/some-other-name.bin", b"exe bytes")
 
-    result = updater.extract(
-        zip_path, tmp_path / "staging", expected_name="naver-post-crawler.exe"
-    )
+    result = updater.extract(zip_path, tmp_path / "staging", expected_name="naver-post-crawler.exe")
 
     assert result.name == "naver-post-crawler.exe"
     assert result.exists()
