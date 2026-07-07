@@ -274,6 +274,46 @@ def test_extract_renames_entry_to_expected_name(tmp_path: Path) -> None:
     assert result.is_file()
 
 
+def test_extract_handles_folder_wrapped_exe(tmp_path: Path) -> None:
+    # covers: Test-13 (폴더 배포 zip: naver-post-crawler/naver-post-crawler.exe 구조)
+    zip_path = tmp_path / "asset.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("naver-post-crawler/naver-post-crawler.exe", b"dummy exe bytes")
+
+    staging = tmp_path / "staging"
+    result = updater.extract(zip_path, staging)
+
+    assert result.exists()
+    assert result.is_file()
+    assert result.name == "naver-post-crawler.exe"
+
+
+def test_extract_folder_wrapped_renames_to_expected_name(tmp_path: Path) -> None:
+    # covers: Test-13 (폴더 배포 zip + expected_name rename)
+    zip_path = tmp_path / "asset.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("naver-post-crawler/some-other-name.bin", b"exe bytes")
+
+    result = updater.extract(
+        zip_path, tmp_path / "staging", expected_name="naver-post-crawler.exe"
+    )
+
+    assert result.name == "naver-post-crawler.exe"
+    assert result.exists()
+    assert result.is_file()
+
+
+def test_extract_rejects_folder_with_multiple_files(tmp_path: Path) -> None:
+    # covers: Test-18 (폴더 안에 파일이 여럿이면 어느 것을 교체 대상으로 할지 모호)
+    zip_path = tmp_path / "asset.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("naver-post-crawler/naver-post-crawler.exe", b"exe bytes")
+        zf.writestr("naver-post-crawler/readme.txt", b"extra file in folder")
+
+    with pytest.raises(RuntimeError):
+        updater.extract(zip_path, tmp_path / "staging")
+
+
 def _expected_backup(install_exe: Path) -> Path:
     """write_sidecar이 계산하는 단일 파일 백업 경로(<stem>_backup<suffix>)를 재현한다."""
     return install_exe.parent / (install_exe.stem + "_backup" + install_exe.suffix)

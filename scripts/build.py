@@ -355,8 +355,10 @@ def compress_pack_artifact() -> None:
     """flet pack 결과물을 릴리스 에셋 zip(dist/naver-post-crawler-<target>.zip)으로 만든다.
 
     업데이터(naver_post_crawler.updater)가 소비하는 에셋이다. updater.extract() 계약에
-    맞춰, 단일 파일(win .exe/linux 바이너리)은 zip의 유일한 엔트리가 그 실행파일이 되게
+    맞춰, 단일 파일(win .exe/linux 바이너리)은 naver-post-crawler/ 폴더 안에 담아 압축
     하고, macOS .app 번들은 최상위 폴더 이름을 보존해 단일 디렉터리로 풀리게 한다.
+    zip을 풀면 naver-post-crawler/<exe> 구조가 되어, exe 실행 시 생성되는 storage/ 등
+    부산물이 같은 폴더 안에 모인다.
     """
     target = _current_pack_target()
     artifact = _pack_artifact_path()
@@ -368,8 +370,10 @@ def compress_pack_artifact() -> None:
             for path in sorted(artifact.rglob("*")):
                 if path.is_file():
                     zf.write(path, arcname=str(path.relative_to(artifact.parent)))
-        else:  # win .exe / linux 바이너리: 유일한 엔트리가 실행파일 자체가 되게 한다.
-            zf.write(artifact, arcname=artifact.name)
+        else:  # win .exe / linux 바이너리: naver-post-crawler/ 폴더 안에 담아 압축한다.
+            # 압축을 풀면 naver-post-crawler/<exe> 구조가 되어, exe 실행 시 생성되는
+            # storage/ 등의 부산물이 같은 폴더 안에 모인다.
+            zf.write(artifact, arcname=f"{_PACK_NAME}/{artifact.name}")
     info(f"릴리스 에셋: {zip_path}")
 
 
