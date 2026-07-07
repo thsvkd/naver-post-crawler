@@ -246,13 +246,14 @@ def download(
 def extract(
     zip_path: str | Path, staging_dir: str | Path, *, expected_name: str | None = None
 ) -> Path:
-    """zip 을 staging_dir 아래에 풀고, 새 실행 파일(단일 엔트리) 경로를 돌려준다.
+    """zip 을 staging_dir 아래에 풀고, 새 실행 파일 경로를 돌려준다.
 
-    엔트리가 정확히 하나의 파일이 아니면 거부한다(반환 경로가 그대로 사이드카 스크립트의
-    move 대상이 되므로, 폴더가 넘어가면 잘못된 move가 되고 다중 엔트리는 어느 것을 교체
-    대상으로 할지 모호하다). expected_name 을 주면 엔트리 이름이 다를 때 그 이름으로
-    rename 해 반환한다 — 사이드카에 들어갈 파일명을 에셋 zip 내부 이름(신뢰 불가)이 아닌
-    고정값으로 못박아, zip 안의 이름 조작으로 임의 경로를 만드는 것을 원천 차단한다.
+    최상위 엔트리가 정확히 하나여야 한다. 그 엔트리가 파일이면 직접 반환하고,
+    폴더이면 그 안의 파일을 정확히 하나 찾아 반환한다(naver-post-crawler/<exe> 폴더
+    배포 zip 지원). 어느 경우든 다중 엔트리나 중첩 폴더는 거부한다. expected_name
+    을 주면 파일 이름이 다를 때 그 이름으로 rename 해 반환한다 — 사이드카에 들어갈
+    파일명을 에셋 zip 내부 이름(신뢰 불가)이 아닌 고정값으로 못박아, zip 안의 이름
+    조작으로 임의 경로를 만드는 것을 원천 차단한다.
     """
     staging_dir = Path(staging_dir)
     if staging_dir.exists():
@@ -264,10 +265,16 @@ def extract(
     if len(entries) != 1:
         raise RuntimeError("예상과 다른 에셋 구성(엔트리 수)")
     entry = entries[0]
+    if entry.is_dir():
+        # 폴더 배포 zip(naver-post-crawler/<exe>): 폴더 안에서 실행 파일을 찾는다.
+        inner = [p for p in entry.iterdir() if p.is_file()]
+        if len(inner) != 1:
+            raise RuntimeError("에셋 폴더 안에 실행 파일이 정확히 하나여야 합니다")
+        entry = inner[0]
     if not entry.is_file():
         raise RuntimeError("에셋 엔트리가 파일이 아닙니다")
     if expected_name is not None and entry.name != expected_name:
-        target = staging_dir / expected_name
+        target = entry.parent / expected_name
         entry.rename(target)
         entry = target
     return entry
