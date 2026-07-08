@@ -83,4 +83,4 @@ def test_since_after_until_raises_usage_error() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["--since", "2023-12-31", "--until", "2023-01-01", "target"])
     assert result.exit_code != 0
-    assert "since" in result.output.lower() or "until" in result.output.lower()
+    assert "--since가 --until보다" in result.output

@@ -258,5 +258,5 @@ def test_build_plan_since_stops_iteration_early(tmp_path: Path) -> None:
 
     # 결과: JUN, AUG, DEC만 포함(과거→최근)
     assert [m.log_no for m in plan.targets] == [3, 4, 5]
-    # 조기 종료: FEB(id=2)에서 멈춰 총 4건만 수집, JAN(id=1)은 방문하지 않는다.
-    assert len(collected_counts) == 4
+    # 조기 종료: FEB(id=2)에서 멈춰 DEC·AUG·JUN 3건만 수집, FEB·JAN은 방문하지 않는다.
+    assert len(collected_counts) == 3

@@ -99,28 +99,29 @@ class Crawler:
 
         ``since``·``until``은 ``date`` 타입(YYYY-MM-DD)으로, 해당 날짜(KST 기준)
         범위 밖의 글을 제외한다. 경계 날짜는 포함한다.
+
+        .. note::
+            SPEC.md §3.2에 명시된 대로, 내부 API는 최신→과거 순으로 글을 반환한다.
+            ``since``가 지정되면 이 순서를 활용해 범위 이전 글을 만나는 즉시 순회를
+            멈춘다(불필요한 API 호출 절감).
         """
         metas: list[PostMeta] = []
         for meta in self.client.iter_post_meta():
-            metas.append(meta)
-            if on_collect is not None:
-                on_collect(len(metas))
             # 조기 종료: API는 최신→과거 순으로 반환한다. 비-기념일 글의 날짜가
-            # since보다 이전이면, 이후 글도 모두 그 이전이므로 수집을 멈춘다.
+            # since보다 이전이면 이후 글도 모두 그 이전이므로 수집을 멈춘다.
             # 기념일 글은 add_date_ms가 신뢰할 수 없으므로 판별에서 제외한다.
             if since is not None and not meta.is_anniversary and meta.written_at.date() < since:
                 break
+            metas.append(meta)
+            if on_collect is not None:
+                on_collect(len(metas))
         # API 메타의 thisDayPostInfo로 "N년 전 오늘" 자동 노출 글을 먼저 거른다.
         targets = [m for m in metas if not m.is_anniversary]
         skipped = len(metas) - len(targets)
-        # 기간 필터: since·until이 주어지면 해당 범위(경계 포함)만 남긴다.
-        if since is not None or until is not None:
-            targets = [
-                m
-                for m in targets
-                if (since is None or m.written_at.date() >= since)
-                and (until is None or m.written_at.date() <= until)
-            ]
+        # until 필터: 지정 날짜를 초과하는 글을 제외한다(경계 포함).
+        # since는 조기 종료로 이미 처리됐으므로 여기서는 until만 본다.
+        if until is not None:
+            targets = [m for m in targets if m.written_at.date() <= until]
         # post-list는 최신→과거 순이므로 뒤집어 과거→최근으로 만든다.
         targets.reverse()
         logger.info(
