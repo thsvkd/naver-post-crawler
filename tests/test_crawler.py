@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import date, datetime
 from pathlib import Path
 
 from naver_post_crawler.crawler import Crawler, Outcome, _realign
 from naver_post_crawler.errors import FetchError
 from naver_post_crawler.failures import FailureStore
-from naver_post_crawler.models import PostMeta
+from naver_post_crawler.models import KST, PostMeta
 
 _VALID_HTML = (
     '<div class="se-main-container">'
@@ -48,6 +49,12 @@ def _meta(log_no: int) -> PostMeta:
     return PostMeta(
         log_no=log_no, title=f"글 {log_no}", add_date_ms=1692576000000, is_anniversary=False
     )
+
+
+def _meta_on(log_no: int, d: date) -> PostMeta:
+    """주어진 날짜(KST 자정)로 작성 시각을 설정한 PostMeta를 만든다."""
+    ms = int(datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=KST).timestamp() * 1000)
+    return PostMeta(log_no=log_no, title=f"글 {log_no}", add_date_ms=ms, is_anniversary=False)
 
 
 def _make_crawler(tmp_path: Path, client: _FakeClient, **kw: object) -> Crawler:
@@ -158,3 +165,73 @@ def test_build_plan_excludes_anniversary_posts(tmp_path: Path) -> None:
     assert collected == [1, 2]
     assert [m.log_no for m in plan.targets] == [1]
     assert plan.skipped_anniversary == 1
+
+
+# -- 기간 필터 테스트 (Test-1 ~ Test-6) ------------------------------------
+
+_JAN = date(2023, 1, 1)
+_JUN = date(2023, 6, 15)
+_AUG = date(2023, 8, 21)
+_DEC = date(2023, 12, 31)
+
+
+def _date_filtered_plan(
+    tmp_path: Path,
+    *,
+    since: date | None = None,
+    until: date | None = None,
+) -> list[int]:
+    """_JAN, _JUN, _AUG, _DEC 날짜 글 4건으로 계획을 세우고 log_no 목록만 돌려준다."""
+    # 클라이언트는 최신→과거 순으로 내보낸다.
+    metas = [
+        _meta_on(4, _DEC),
+        _meta_on(3, _AUG),
+        _meta_on(2, _JUN),
+        _meta_on(1, _JAN),
+    ]
+    client = _FakeClient({}, metas=metas)
+    crawler = _make_crawler(tmp_path, client)
+    plan = crawler.build_plan(since=since, until=until)
+    return [m.log_no for m in plan.targets]
+
+
+def test_build_plan_since_excludes_before(tmp_path: Path) -> None:
+    # covers: Test-1
+    # _JUN(2) 이후만: _JUN, _AUG, _DEC
+    ids = _date_filtered_plan(tmp_path, since=_JUN)
+    assert ids == [2, 3, 4]
+
+
+def test_build_plan_until_excludes_after(tmp_path: Path) -> None:
+    # covers: Test-2
+    # _AUG(3) 이전만: _JAN, _JUN, _AUG
+    ids = _date_filtered_plan(tmp_path, until=_AUG)
+    assert ids == [1, 2, 3]
+
+
+def test_build_plan_since_and_until_keeps_range(tmp_path: Path) -> None:
+    # covers: Test-3
+    # _JUN ~ _AUG 사이: _JUN, _AUG
+    ids = _date_filtered_plan(tmp_path, since=_JUN, until=_AUG)
+    assert ids == [2, 3]
+
+
+def test_build_plan_boundary_dates_are_inclusive(tmp_path: Path) -> None:
+    # covers: Test-4
+    # since=_JAN, until=_DEC → 전체 포함
+    ids = _date_filtered_plan(tmp_path, since=_JAN, until=_DEC)
+    assert ids == [1, 2, 3, 4]
+
+
+def test_build_plan_since_equals_until_keeps_exact_day(tmp_path: Path) -> None:
+    # covers: Test-5
+    # since=until=_AUG → _AUG(3)만
+    ids = _date_filtered_plan(tmp_path, since=_AUG, until=_AUG)
+    assert ids == [3]
+
+
+def test_build_plan_no_filter_returns_all(tmp_path: Path) -> None:
+    # covers: Test-6
+    # 필터 미지정 → 전체
+    ids = _date_filtered_plan(tmp_path)
+    assert ids == [1, 2, 3, 4]

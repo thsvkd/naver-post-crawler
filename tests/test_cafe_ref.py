@@ -30,6 +30,16 @@ def test_is_cafe_reference(value: str, expected: bool) -> None:
     ("value", "expected"),
     [
         (
+            # Test-7: f-e 접두 + menus + viewType 쿼리 파라미터
+            "https://cafe.naver.com/f-e/cafes/27999207/menus/3?viewType=L",
+            CafeReference(cafe_id=27999207, menu_id=3),
+        ),
+        (
+            # Test-8: f-e 접두 + menus(쿼리 없음)
+            "https://cafe.naver.com/f-e/cafes/27999207/menus/4",
+            CafeReference(cafe_id=27999207, menu_id=4),
+        ),
+        (
             "https://cafe.naver.com/steamindiegame",
             CafeReference(club_url="steamindiegame"),
         ),

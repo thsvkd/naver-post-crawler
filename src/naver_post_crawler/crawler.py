@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum, auto
 from pathlib import Path
 
@@ -84,11 +85,20 @@ class Crawler:
         # 소스별 본문 파서(블로그: parse_post_body, 카페: parse_cafe_body).
         self._parse_body = parse_body
 
-    def build_plan(self, on_collect: Callable[[int], None] | None = None) -> CrawlPlan:
+    def build_plan(
+        self,
+        on_collect: Callable[[int], None] | None = None,
+        *,
+        since: date | None = None,
+        until: date | None = None,
+    ) -> CrawlPlan:
         """전체 메타데이터를 모아 빈 글을 거르고 과거→최근으로 정렬한다.
 
         ``on_collect``가 주어지면 메타를 한 건 모을 때마다 현재까지의 누적 건수로
         호출한다(수집 진행 표시용). 미지정 시 조용히 전부 모은다.
+
+        ``since``·``until``은 ``date`` 타입(YYYY-MM-DD)으로, 해당 날짜(KST 기준)
+        범위 밖의 글을 제외한다. 경계 날짜는 포함한다.
         """
         metas: list[PostMeta] = []
         for meta in self.client.iter_post_meta():
@@ -98,6 +108,14 @@ class Crawler:
         # API 메타의 thisDayPostInfo로 "N년 전 오늘" 자동 노출 글을 먼저 거른다.
         targets = [m for m in metas if not m.is_anniversary]
         skipped = len(metas) - len(targets)
+        # 기간 필터: since·until이 주어지면 해당 범위(경계 포함)만 남긴다.
+        if since is not None or until is not None:
+            targets = [
+                m
+                for m in targets
+                if (since is None or m.written_at.date() >= since)
+                and (until is None or m.written_at.date() <= until)
+            ]
         # post-list는 최신→과거 순이므로 뒤집어 과거→최근으로 만든다.
         targets.reverse()
         logger.info(

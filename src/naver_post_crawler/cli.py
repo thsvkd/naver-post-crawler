@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, deque
+from datetime import date, datetime
 from pathlib import Path
 
 import click
@@ -89,6 +90,18 @@ _REFRESH_PER_SECOND = 8
     "--limit", type=int, default=None, help="처리할 글 수 제한(과거부터). 미지정 시 전체."
 )
 @click.option(
+    "--since",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="이 날짜(YYYY-MM-DD, KST 기준) 이후 글만 받는다(경계 포함).",
+)
+@click.option(
+    "--until",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="이 날짜(YYYY-MM-DD, KST 기준) 이전 글만 받는다(경계 포함).",
+)
+@click.option(
     "--retry-failed/--no-retry-failed",
     "retry_flag",
     default=None,
@@ -134,6 +147,8 @@ def main(
     delay: float,
     max_retries: int,
     limit: int | None,
+    since: datetime | None,
+    until: datetime | None,
     retry_flag: bool | None,
     force: bool,
     cookie: str | None,
@@ -193,7 +208,19 @@ def main(
 
     console.print(title)
     console.print(f"[dim]로그: {log_file}[/dim]")
-    _backup(client, crawler, out_dir, failures, limit=limit, retry_flag=retry_flag, force=force)
+    since_date = since.date() if since is not None else None
+    until_date = until.date() if until is not None else None
+    _backup(
+        client,
+        crawler,
+        out_dir,
+        failures,
+        limit=limit,
+        since=since_date,
+        until=until_date,
+        retry_flag=retry_flag,
+        force=force,
+    )
 
 
 def _build_blog(
@@ -272,6 +299,8 @@ def _backup(
     failures: FailureStore,
     *,
     limit: int | None,
+    since: date | None,
+    until: date | None,
     retry_flag: bool | None,
     force: bool,
 ) -> None:
@@ -279,7 +308,7 @@ def _backup(
     with client:  # type: ignore[attr-defined]
         try:
             with console.status("[bold]글 목록 수집 중…[/bold]"):
-                plan = crawler.build_plan()
+                plan = crawler.build_plan(since=since, until=until)
         except (BlogNotFound, CafeNotFound) as exc:
             # 형식은 맞지만 없는 블로그/카페다. 입력 오류로 깔끔히 안내한다.
             raise click.BadParameter(str(exc), param_hint="TARGET") from exc
