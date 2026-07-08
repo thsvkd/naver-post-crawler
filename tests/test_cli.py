@@ -7,9 +7,10 @@ from pathlib import Path
 
 import click
 import pytest
+from click.testing import CliRunner
 
 import naver_post_crawler.cli as cli_mod
-from naver_post_crawler.cli import _decide_retry, _resolve_cli_cookie, _run
+from naver_post_crawler.cli import _decide_retry, _resolve_cli_cookie, _run, main
 from naver_post_crawler.crawler import Outcome, PostResult
 from naver_post_crawler.models import PostMeta
 
@@ -75,3 +76,11 @@ def test_resolve_cli_cookie_bad_file_raises_bad_parameter(tmp_path: Path) -> Non
 def test_resolve_cli_cookie_falls_back_to_stored(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_mod, "load_cookie", lambda: "STORED")
     assert _resolve_cli_cookie(None, None) == "STORED"
+
+
+def test_since_after_until_raises_usage_error() -> None:
+    """--since가 --until보다 늦으면 UsageError로 즉시 중단한다."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["--since", "2023-12-31", "--until", "2023-01-01", "target"])
+    assert result.exit_code != 0
+    assert "since" in result.output.lower() or "until" in result.output.lower()

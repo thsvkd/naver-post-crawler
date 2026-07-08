@@ -105,6 +105,11 @@ class Crawler:
             metas.append(meta)
             if on_collect is not None:
                 on_collect(len(metas))
+            # 조기 종료: API는 최신→과거 순으로 반환한다. 비-기념일 글의 날짜가
+            # since보다 이전이면, 이후 글도 모두 그 이전이므로 수집을 멈춘다.
+            # 기념일 글은 add_date_ms가 신뢰할 수 없으므로 판별에서 제외한다.
+            if since is not None and not meta.is_anniversary and meta.written_at.date() < since:
+                break
         # API 메타의 thisDayPostInfo로 "N년 전 오늘" 자동 노출 글을 먼저 거른다.
         targets = [m for m in metas if not m.is_anniversary]
         skipped = len(metas) - len(targets)

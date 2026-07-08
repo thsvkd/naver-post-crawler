@@ -235,3 +235,28 @@ def test_build_plan_no_filter_returns_all(tmp_path: Path) -> None:
     # 필터 미지정 → 전체
     ids = _date_filtered_plan(tmp_path)
     assert ids == [1, 2, 3, 4]
+
+
+def test_build_plan_since_stops_iteration_early(tmp_path: Path) -> None:
+    # since를 지정하면 경계 이전 글을 만난 즉시 순회를 멈춘다.
+    # 최신→과거: DEC(5), AUG(4), JUN(3), FEB(2), JAN(1)
+    # since=_JUN: DEC, AUG, JUN은 범위 안. FEB < JUN 이므로 FEB에서 멈춰야 한다.
+    # 즉 JAN(1)은 절대 수집되지 않는다.
+    _FEB = date(2023, 2, 1)
+    metas = [
+        _meta_on(5, _DEC),
+        _meta_on(4, _AUG),
+        _meta_on(3, _JUN),
+        _meta_on(2, _FEB),
+        _meta_on(1, _JAN),
+    ]
+    client = _FakeClient({}, metas=metas)
+    crawler = _make_crawler(tmp_path, client)
+
+    collected_counts: list[int] = []
+    plan = crawler.build_plan(on_collect=collected_counts.append, since=_JUN)
+
+    # 결과: JUN, AUG, DEC만 포함(과거→최근)
+    assert [m.log_no for m in plan.targets] == [3, 4, 5]
+    # 조기 종료: FEB(id=2)에서 멈춰 총 4건만 수집, JAN(id=1)은 방문하지 않는다.
+    assert len(collected_counts) == 4

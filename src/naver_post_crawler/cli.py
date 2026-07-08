@@ -184,6 +184,12 @@ def main(
     if not target:
         raise click.UsageError("TARGET을 지정하세요 (또는 --check-update / --version).")
 
+    # 기간 옵션 조기 검증: 로깅 설정 전에 입력 오류를 빠르게 잡는다.
+    since_date = since.date() if since is not None else None
+    until_date = until.date() if until is not None else None
+    if since_date is not None and until_date is not None and since_date > until_date:
+        raise click.UsageError("--since가 --until보다 늦을 수 없습니다.")
+
     # 진행 화면(Live)과 같은 콘솔을 넘겨, 로그가 진행바 위로 흐르도록 한다.
     log_file = setup_logging(
         log_dir,
@@ -208,8 +214,6 @@ def main(
 
     console.print(title)
     console.print(f"[dim]로그: {log_file}[/dim]")
-    since_date = since.date() if since is not None else None
-    until_date = until.date() if until is not None else None
     _backup(
         client,
         crawler,
