@@ -93,6 +93,19 @@ def test_upload_command_passes_explicit_v_tag() -> None:
     assert "--merge" in cmd, "두 플랫폼이 같은 릴리스에 합류해야 한다"
 
 
+def test_upload_stays_draft_unless_publish_is_requested() -> None:
+    # covers: Test-34 (두 플랫폼 릴리스는 한쪽만 올라간 상태로 공개되면 안 된다)
+    draft = deploy.upload_command("vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"))
+    published = deploy.upload_command(
+        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), publish=True
+    )
+
+    assert "--publish" not in draft, (
+        "먼저 올라간 플랫폼만으로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 본다"
+    )
+    assert "--publish" in published
+
+
 def test_release_notes_are_generated_only_once(tmp_path: Path) -> None:
     # covers: Test-34
     notes = tmp_path / "RELEASE_NOTES.md"

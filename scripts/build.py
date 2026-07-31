@@ -6,7 +6,7 @@
 (``flet build``와 ``vpk`` 양쪽의 제약이라 우회할 수 없다).
 
 사용:
-    python scripts/build.py
+    uv run python scripts/build.py
 
 결과물:
     dist/naver-post-crawler-<target>/   flet build 번들(설치기의 원본)
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import platform
+import plistlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -163,6 +164,58 @@ def flet_build_command(target: str, *, template_dir: Path | None) -> list[str]:
     return cmd
 
 
+def macos_main_exe(app_bundle: Path) -> str:
+    """``.app`` 번들이 실행하는 바이너리 이름.
+
+    번들이 스스로 밝히는 이름(``Info.plist``의 ``CFBundleExecutable``)을 우선 쓰고, 읽지
+    못하면 ``Contents/MacOS``에 있는 실행 파일에서 찾는다. 어느 쪽으로도 알 수 없으면
+    중단한다 — 조용히 packId로 떨어지면 vpk가 존재하지 않는 경로를 찾다 실패한다.
+    """
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    if plist_path.is_file():
+        try:
+            with plist_path.open("rb") as handle:
+                name = plistlib.load(handle).get("CFBundleExecutable")
+        except (OSError, plistlib.InvalidFileException):
+            name = None
+        if name:
+            return str(name)
+
+    macos_dir = app_bundle / "Contents" / "MacOS"
+    binaries = sorted(p for p in macos_dir.glob("*") if p.is_file()) if macos_dir.is_dir() else []
+    if len(binaries) == 1:
+        return binaries[0].name
+    fail(
+        f"{app_bundle}에서 실행 파일 이름을 정하지 못했습니다"
+        f"(Info.plist의 CFBundleExecutable 없음, Contents/MacOS 항목 {len(binaries)}개)."
+    )
+
+
+def prune_bundle(app_bundle: Path) -> list[Path]:
+    """배포 번들에서 **바깥을 가리키는 심볼릭 링크**를 지우고 그 목록을 돌려준다.
+
+    ``flet build macos``는 site-packages에 ``.pod -> ~/.pub-cache/.../darwin`` 같은 링크를
+    남긴다. 빌드 머신의 절대 경로라 사용자 머신에서는 어차피 깨진 링크이고, 그 대상 안에
+    같은 링크가 또 있어 **트리 순회가 무한 재귀한다**(실측: vpk pack이 "path is too long"
+    으로 죽었다). 배포 번들은 자기 완결적이어야 하므로 여기서 걷어낸다.
+
+    번들 안을 가리키는 링크는 그대로 둔다 — macOS 프레임워크 구조(``Versions/Current`` 등)가
+    내부 심볼릭 링크로 이루어져 있어 지우면 앱이 깨진다.
+    """
+    root = app_bundle.resolve()
+    removed: list[Path] = []
+    for path in app_bundle.rglob("*"):
+        if not path.is_symlink():
+            continue
+        # 링크가 가리키는 곳을 번들 기준으로 판정한다. 대상이 없어도(깨진 링크) 경로만 본다.
+        target = Path(os.path.realpath(path))
+        if target == root or root in target.parents:
+            continue
+        path.unlink()
+        removed.append(path)
+    return removed
+
+
 def velopack_output_dir() -> Path:
     """Velopack 산출물 폴더(릴리스에 올릴 파일들이 모이는 곳)."""
     return REPO_ROOT / "dist" / "velopack"
@@ -198,6 +251,10 @@ def vpk_pack_args(target: str, *, bundle_dir: Path, version: str) -> list[str]:
         if params:
             args += ["--signParams", params]
     else:
+        # macOS도 --mainExe가 필요하다. 생략하면 vpk가 packId를 실행 파일 이름으로 가정하고
+        # <bundle>/Contents/MacOS/<packId>를 찾다 실패한다(실측: packId는 NaverPostCrawler인데
+        # 실제 바이너리는 naver-post-crawler라 "Could not find main application executable").
+        args += ["--mainExe", macos_main_exe(bundle_dir)]
         # 설치기(.pkg)만 배포한다(D-2). Portable.zip은 올리지 않으므로 만들지도 않는다.
         args.append("--noPortable")
         args += sign.velopack_sign_args_macos()
@@ -329,7 +386,15 @@ def main() -> int:
         # 앱 exe 서명(NPC_SIGN_* 설정 시). 미지정이면 미서명으로 계속한다.
         sign.maybe_sign_bundle(dst)
 
-    pack_dir = dst if target == "windows" else app_bundle(dst)
+    if target == "windows":
+        pack_dir = dst
+    else:
+        pack_dir = app_bundle(dst)
+        # 빌드 머신 경로를 가리키는 링크를 걷어낸다(없으면 무동작). 남겨 두면 vpk가 트리를
+        # 순회하다 무한 재귀에 빠지고, 사용자 머신에서는 어차피 깨진 링크다.
+        pruned = prune_bundle(pack_dir)
+        if pruned:
+            info(f"번들 밖을 가리키는 심볼릭 링크 {len(pruned)}개 제거: {pruned[0].name} …")
     out = velopack_pack(bundle_dir=pack_dir, version=version, target=target, vpk=find_vpk())
     info(f"Velopack 산출물: {out}")
     info(f"릴리스 업로드는 'python scripts/deploy.py'로 진행하세요 (태그 v{version}).")

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import importlib.util
+import plistlib
 import sys
 from pathlib import Path
 
@@ -87,10 +88,20 @@ def test_vpk_pack_args_windows_channel_and_main_exe(tmp_path: Path) -> None:
     assert _flag_value(args, "--packVersion") == "0.2.0"
 
 
+def _app_bundle(tmp_path: Path, executable: str = "naver-post-crawler") -> Path:
+    """``flet build macos`` 산출물과 같은 모양의 최소 ``.app`` 번들을 만든다."""
+    bundle = tmp_path / "naver-post-crawler.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+    (bundle / "Contents" / "MacOS" / executable).write_text("", encoding="utf-8")
+    (bundle / "Contents" / "Info.plist").write_bytes(
+        plistlib.dumps({"CFBundleExecutable": executable})
+    )
+    return bundle
+
+
 def test_vpk_pack_args_macos_targets_app_bundle(tmp_path: Path) -> None:
     # covers: Test-11
-    bundle = tmp_path / "Naver Post Crawler.app"
-    bundle.mkdir()
+    bundle = _app_bundle(tmp_path)
 
     args = build.vpk_pack_args("macos", bundle_dir=bundle, version="0.2.0")
 
@@ -100,6 +111,37 @@ def test_vpk_pack_args_macos_targets_app_bundle(tmp_path: Path) -> None:
     assert _flag_value(args, "--packVersion") == "0.2.0"
     # macOS에는 signtool 기반 --signParams가 존재하지 않는다.
     assert "--signParams" not in args
+
+
+def test_vpk_pack_args_macos_passes_main_exe_from_bundle(tmp_path: Path) -> None:
+    # covers: Test-11 (회귀: vpk는 --mainExe 기본값으로 packId를 쓴다)
+    # 실측 실패: packId가 'NaverPostCrawler'인데 실제 바이너리는 'naver-post-crawler'라
+    # vpk pack이 "Could not find main application executable"로 죽었다. 번들이 스스로
+    # 밝히는 이름(Info.plist의 CFBundleExecutable)을 넘겨야 한다.
+    bundle = _app_bundle(tmp_path, executable="naver-post-crawler")
+
+    args = build.vpk_pack_args("macos", bundle_dir=bundle, version="0.2.0")
+
+    assert _flag_value(args, "--mainExe") == "naver-post-crawler"
+    assert _flag_value(args, "--mainExe") != build.PACK_ID
+
+
+def test_macos_main_exe_falls_back_to_binary_in_bundle(tmp_path: Path) -> None:
+    # covers: Test-11 (Info.plist를 못 읽어도 조용히 packId로 떨어지면 안 된다)
+    bundle = tmp_path / "app.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+    (bundle / "Contents" / "MacOS" / "some-binary").write_text("", encoding="utf-8")
+
+    assert build.macos_main_exe(bundle) == "some-binary"
+
+
+def test_macos_main_exe_fails_when_bundle_has_no_executable(tmp_path: Path) -> None:
+    # covers: Test-11
+    bundle = tmp_path / "empty.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+
+    with pytest.raises(SystemExit):
+        build.macos_main_exe(bundle)
 
 
 def test_vpk_pack_args_omit_signing_when_unset(tmp_path: Path, monkeypatch) -> None:
@@ -112,14 +154,47 @@ def test_vpk_pack_args_omit_signing_when_unset(tmp_path: Path, monkeypatch) -> N
         "NPC_SIGN_NOTARY_PROFILE",
     ):
         monkeypatch.delenv(name, raising=False)
-    bundle = tmp_path / "b"
-    bundle.mkdir()
-
-    win = build.vpk_pack_args("windows", bundle_dir=bundle, version="0.2.0")
-    mac = build.vpk_pack_args("macos", bundle_dir=bundle, version="0.2.0")
+    win = build.vpk_pack_args("windows", bundle_dir=tmp_path, version="0.2.0")
+    mac = build.vpk_pack_args("macos", bundle_dir=_app_bundle(tmp_path), version="0.2.0")
 
     assert "--signParams" not in win
     assert "--signAppIdentity" not in mac
+
+
+# -- 번들 정리: 바깥을 가리키는 심볼릭 링크 --------------------------------------------
+# 실측 실패: flet build macos 산출물의 site-packages에 `.pod -> ~/.pub-cache/.../darwin`
+# 심볼릭 링크가 남는데, 그 대상 안에 다시 같은 링크가 있어 트리 순회가 무한 재귀한다.
+# vpk pack이 "path is too long"으로 죽었다. 애초에 빌드 머신 절대 경로라 사용자 머신에서는
+# 깨진 링크이므로, 배포 번들에 있어서는 안 된다.
+
+
+def test_prune_bundle_removes_symlinks_pointing_outside(tmp_path: Path) -> None:
+    # covers: Test-12
+    outside = tmp_path / "pub-cache"
+    outside.mkdir()
+    bundle = _app_bundle(tmp_path)
+    site = bundle / "Contents" / "Resources" / "site-packages"
+    site.mkdir(parents=True)
+    escaping = site / ".pod"
+    escaping.symlink_to(outside)
+    keeper = site / "real.py"
+    keeper.write_text("", encoding="utf-8")
+    internal = site / "inside-link"
+    internal.symlink_to(keeper)
+
+    removed = build.prune_bundle(bundle)
+
+    assert not escaping.is_symlink(), "번들 밖을 가리키는 링크는 제거되어야 한다"
+    assert escaping in removed
+    assert keeper.exists(), "실제 파일은 건드리면 안 된다"
+    assert internal.is_symlink(), "번들 안을 가리키는 링크는 그대로 둔다"
+
+
+def test_prune_bundle_is_noop_for_clean_bundle(tmp_path: Path) -> None:
+    # covers: Test-12
+    bundle = _app_bundle(tmp_path)
+
+    assert build.prune_bundle(bundle) == []
 
 
 def _flag_value(args: list[str], flag: str) -> str:
@@ -165,8 +240,11 @@ def test_vpk_download_precedes_pack_with_matching_channel(
 ) -> None:
     # covers: Test-13
     # 두 타깃 모두 확인한다 — windows만 보면 채널을 "win"으로 하드코딩해도 통과한다.
-    bundle = tmp_path / ("bundle.app" if target == "macos" else "bundle")
-    bundle.mkdir()
+    if target == "macos":
+        bundle = _app_bundle(tmp_path)
+    else:
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
     calls: list[list[str]] = []
 
     def fake_runner(cmd: list[str], **_kwargs: object) -> int:

@@ -10,9 +10,10 @@ Windows와 macOS 산출물은 **같은 태그 하나**에 함께 올린다. Velo
 **합류**만 하고(``--merge``) 릴리스 노트를 덮어쓰지 않는다.
 
 사용:
-    python scripts/deploy.py                    # 빌드 + 업로드
-    python scripts/deploy.py --skip-build       # 이미 빌드된 dist/velopack을 올리기만 한다
-    python scripts/deploy.py --dry-run          # 올릴 에셋 목록만 보여주고 끝낸다
+    uv run python scripts/deploy.py --dry-run     # 올릴 에셋 목록만 보여주고 끝낸다
+    uv run python scripts/deploy.py               # 빌드 + 업로드(draft 상태로 남는다)
+    uv run python scripts/deploy.py --skip-build  # 이미 빌드된 dist/velopack을 올리기만 한다
+    uv run python scripts/deploy.py --publish     # 두 플랫폼이 다 올라간 뒤 공개한다
 
 절차:
     0. pyproject.toml의 [project].version(SSOT)을 미리 올려 둔다. 이전 릴리스와 같으면
@@ -20,7 +21,9 @@ Windows와 macOS 산출물은 **같은 태그 하나**에 함께 올린다. Velo
     1. scripts/build.py로 이 OS의 설치기를 만든다.
     2. 릴리스 노트를 준비한다 — **사람이 쓴다**(D-10). 기본 경로는 dist/velopack/RELEASE_NOTES.md
        이고, 이미 같은 태그의 릴리스가 있으면(두 번째 플랫폼) 노트를 넘기지 않는다.
-    3. vpk upload github으로 이번 버전·이번 채널 에셋만 올린다.
+    3. vpk upload github으로 이번 버전·이번 채널 에셋만 올린다. 기본은 **draft**다 —
+       한쪽 플랫폼만 올라간 상태로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 본다.
+       두 플랫폼이 다 올라간 뒤 마지막 실행에 --publish를 준다.
 
 사전 준비:
     - scripts/build.py와 동일(uv, Velopack CLI, 플랫폼별 툴체인).
@@ -38,8 +41,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import build as build_script
 from _common import REPO_ROOT, fail, info, pyproject_version
+
+import build as build_script
 
 _VERSION_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
@@ -163,11 +167,16 @@ def upload_command(
     channel: str,
     out_dir: Path,
     notes: list[str] | None = None,
+    publish: bool = False,
 ) -> list[str]:
     """``vpk upload github`` 커맨드.
 
     ``--merge``는 같은 태그의 기존 릴리스에 합류하게 한다(두 번째 플랫폼). 태그는 반드시
     명시한다 — 기본값은 ``v`` 없는 버전 문자열이라 이 저장소의 ``v0.1.0`` 관행과 어긋난다.
+
+    ``publish``는 기본이 False다. 이 프로젝트는 **두 플랫폼이 같은 태그에 합류**하므로,
+    한쪽만 올라간 상태로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 보게 된다.
+    두 플랫폼이 다 올라간 뒤 마지막 실행에서 ``--publish``로 공개한다.
     """
     return [
         vpk,
@@ -182,7 +191,7 @@ def upload_command(
         "--tag",
         f"v{version}",
         "--merge",
-        "--publish",
+        *(["--publish"] if publish else []),
         *(notes or []),
     ]
 
@@ -193,6 +202,11 @@ def main() -> int:
         "--skip-build", action="store_true", help="빌드를 건너뛰고 기존 산출물을 올린다."
     )
     parser.add_argument("--dry-run", action="store_true", help="올릴 에셋 목록만 출력하고 끝낸다.")
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="릴리스를 공개한다. 기본은 draft — 두 플랫폼이 다 올라간 뒤 마지막 실행에서 준다.",
+    )
     parser.add_argument(
         "--notes",
         type=Path,
@@ -210,7 +224,8 @@ def main() -> int:
     assert_version_is_new(prev_tag=latest_release_tag(), tag=tag)
     info(f"{tag} · {target}({channel} 채널) 배포")
 
-    if not args.skip_build:
+    # --dry-run은 "무엇이 올라갈지"만 보는 용도다. 그것 때문에 수 분짜리 빌드를 돌리지 않는다.
+    if not args.skip_build and not args.dry_run:
         info("빌드 시작 (scripts/build.py)")
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "scripts" / "build.py")], cwd=REPO_ROOT
@@ -245,12 +260,19 @@ def main() -> int:
         channel=channel,
         out_dir=out_dir,
         notes=notes_argument(notes_path, release_exists=exists),
+        publish=args.publish,
     )
     info(f"GitHub 릴리스 업로드: {tag}")
     result = subprocess.run(cmd, cwd=REPO_ROOT)
     if result.returncode != 0:
         fail(f"vpk upload 실패(exit {result.returncode})")
-    info(f"완료: {build_script.REPO_URL}/releases/tag/{tag}")
+    if args.publish:
+        info(f"완료(공개): {build_script.REPO_URL}/releases/tag/{tag}")
+    else:
+        info(
+            f"완료(draft): {build_script.REPO_URL}/releases/tag/{tag}\n"
+            "  다른 플랫폼 산출물까지 올린 뒤 --publish로 공개하세요."
+        )
     return 0
 
 
