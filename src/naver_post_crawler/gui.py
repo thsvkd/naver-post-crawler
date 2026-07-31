@@ -7,11 +7,11 @@ CLI와 동일한 코어(:class:`Crawler` 제너레이터, :class:`FailureStore`,
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from collections import Counter
@@ -20,13 +20,13 @@ from pathlib import Path
 import flet as ft
 from rich.console import Console
 
-from . import __version__, updater
+from . import __version__, velopack_update
 from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
-from .cookie import load_cookie, parse_cookie_file, save_cookie
-from .cookie_login import HELPER_FLAG, login_and_capture, run_helper
+from .cookie import app_data_dir, load_cookie, parse_cookie_file, save_cookie
+from .cookie_login import is_helper_mode, login_and_capture, run_helper
 from .crawler import Crawler, Outcome
 from .errors import (
     CrawlerError,
@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 # 없을 수 있으므로(None) 그때는 콘솔 출력을 끄고 파일에만 기록한다.
 _console = Console(stderr=True) if sys.stderr is not None else None
 
+# 창의 초기 크기. SSOT 주의: scripts/flet_template.py가 네이티브 러너의 첫 창 크기를
+# 패치할 때 이 모듈을 import하지 않고(그러면 flet까지 딸려 온다) 소스를 정규식
+# ``^_WINDOW_(WIDTH|HEIGHT)\s*=\s*(\d+)\b``로 직접 읽는다. 이름·형식을 바꾸면 그
+# 스크립트의 정규식도 함께 고쳐야 한다.
+_WINDOW_WIDTH = 760
+_WINDOW_HEIGHT = 720
+
 # 결과 종류별 (라벨, 색).
 _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
     Outcome.WRITTEN: ("저장", ft.Colors.GREEN),
@@ -54,11 +61,54 @@ _OUTCOME_STYLE: dict[Outcome, tuple[str, str]] = {
     Outcome.SKIPPED_FAILED: ("이전 실패", ft.Colors.PURPLE),
     Outcome.FAILED: ("실패", ft.Colors.RED),
 }
+# GUI가 기억하는 설정(마지막으로 고른 출력 폴더 등)을 담는 파일 이름. 앱 데이터 아래에
+# 두어 업데이트가 설치 폴더를 통째로 교체해도 살아남게 한다.
+_SETTINGS_FILE = "gui_settings.json"
+# 출력 폴더 기본값을 놓을 사용자 폴더 아래 경로. GUI는 바로가기로 실행돼 cwd가 보장되지
+# 않으므로 "output" 같은 상대 경로를 기본값으로 쓸 수 없다(설치본에서는 업데이트로 교체되는
+# 설치 폴더 안에 쌓인다). CLI는 터미널에서 cwd 상대가 자연스러워 그대로 둔다.
+_DEFAULT_OUTPUT_DIRNAME = "naver-post-crawler"
+
 # 로그 ListView에 유지할 최대 줄 수(메모리 보호).
 _MAX_LOG_ROWS = 200
 # 상태 텍스트 렌더 틱 주기(초). 수집 카운트처럼 빠르게 바뀌는 값의 변경을 이 창
 # 안에서 한 번으로 합쳐 화면이 밀리지 않게 한다.
 _UI_TICK_SECONDS = 0.2
+
+
+def _default_output_dir() -> str:
+    """출력 폴더 기본값(사용자 폴더 아래 절대 경로).
+
+    설치본은 바로가기로 실행돼 cwd가 어디인지 보장되지 않고, Velopack 업데이트는 설치
+    폴더를 통째로 교체한다. 상대 경로를 기본값으로 두면 백업 결과물이 그 안에 쌓였다가
+    업데이트 한 번에 사라진다. 앱 데이터가 아니라 **사용자 폴더**에 두는 이유는, 백업
+    결과물은 사용자가 직접 열어 보는 산출물이기 때문이다.
+    """
+    return str(Path.home() / "Documents" / _DEFAULT_OUTPUT_DIRNAME)
+
+
+def _gui_settings_path() -> Path:
+    """GUI 설정 파일 경로(앱 데이터 아래)."""
+    return app_data_dir() / _SETTINGS_FILE
+
+
+def _load_gui_settings() -> dict[str, str]:
+    """저장된 GUI 설정을 읽는다. 없거나 깨졌으면 빈 사전(기본값으로 동작)."""
+    try:
+        data = json.loads(_gui_settings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
+def _save_gui_settings(settings: dict[str, str]) -> None:
+    """GUI 설정을 저장한다. 설정 저장 실패가 앱 동작을 막으면 안 되므로 조용히 넘긴다."""
+    try:
+        _gui_settings_path().write_text(json.dumps(settings, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        logger.debug("GUI 설정 저장 실패", exc_info=True)
 
 
 class CrawlerGUI:
@@ -75,8 +125,8 @@ class CrawlerGUI:
         self._app_closing = threading.Event()
         self._status_msg = "대기 중"
         self._status_color: str | None = None
-        # 업데이트 확인으로 발견한 새 릴리스를 담아 둔다. None 이면 아직 확인 안 됐거나 최신.
-        self._pending_release: updater.Release | None = None
+        # 업데이트 확인으로 발견한 Velopack UpdateInfo. None 이면 아직 확인 안 됐거나 최신.
+        self._pending_update: object | None = None
         # 적용(다운로드~재시작) 진행 중 버튼 재클릭으로 중복 실행되는 것을 막는 재진입 가드.
         self._applying = False
         self._build()
@@ -94,8 +144,8 @@ class CrawlerGUI:
         page.title = "네이버 블로그/카페 백업"
         page.theme_mode = ft.ThemeMode.SYSTEM
         page.padding = 20
-        page.window.width = 760
-        page.window.height = 720
+        page.window.width = _WINDOW_WIDTH
+        page.window.height = _WINDOW_HEIGHT
         page.window.min_width = 560
         page.window.min_height = 520
         page.on_close = self._on_close
@@ -116,7 +166,8 @@ class CrawlerGUI:
         )
         self.out_field = ft.TextField(
             label="출력 폴더",
-            value="output",
+            # 마지막으로 고른 폴더를 복원한다. 한 번도 고른 적이 없으면 사용자 폴더 기본값.
+            value=_load_gui_settings().get("output_dir") or _default_output_dir(),
             expand=True,
             on_change=lambda _e: self._refresh_failures(),
         )
@@ -276,6 +327,8 @@ class CrawlerGUI:
         if path:
             self.out_field.value = path
             self.out_field.update()
+            # 다음 실행에서 같은 폴더로 이어받을 수 있게 기억한다.
+            _save_gui_settings({**_load_gui_settings(), "output_dir": path})
             self._refresh_failures()
 
     async def _pick_cookie_file(self, _e: ft.ControlEvent) -> None:
@@ -364,12 +417,17 @@ class CrawlerGUI:
             self.update_status.update()
 
     def _auto_check_updates(self) -> None:
-        """시작 시 조용히(비대화형) 업데이트를 확인한다."""
+        """시작 워커 — 설치본 유지보수를 먼저 하고, 이어서 조용히 업데이트를 확인한다.
+
+        유지보수(``App().run()``)를 건너뛰면 업데이트할 때마다 이전 전체 패키지가 그대로
+        쌓인다. velopack은 네이티브 모듈이라 import만으로도 느려서 이 워커 스레드에서만 부른다.
+        """
+        velopack_update.run_startup_maintenance()
         self._check_updates(manual=False)
 
     def _on_update_click(self) -> None:
         """업데이트 버튼 클릭 — 아직 미확인이면 확인을, 새 버전이 있으면 적용한다."""
-        if self._pending_release is None:
+        if self._pending_update is None:
             self._set_update_status("업데이트 확인 중…", self._muted_color)
             self.page.run_thread(lambda: self._check_updates(manual=True))
             return
@@ -383,23 +441,24 @@ class CrawlerGUI:
         self.page.run_thread(self._download_and_apply)
 
     def _check_updates(self, manual: bool) -> None:
-        """최신 릴리스를 확인해 버튼·상태를 갱신한다(백그라운드 스레드에서 호출)."""
-        target = updater.current_target()
+        """새 릴리스를 확인해 버튼·상태를 갱신한다(백그라운드 스레드에서 호출)."""
         try:
-            release = updater.check_latest(__version__, target)
+            info = velopack_update.check()
         except Exception as exc:
             logger.warning("업데이트 확인 실패", exc_info=True)
             if manual:
                 self._set_update_status(f"업데이트 확인 실패: {exc}", ft.Colors.AMBER)
             return
-        if release is not None:
-            self._pending_release = release
-            self.update_btn.text = f"v{release.version} 로 업데이트 후 재시작"
+        if info is not None:
+            version = velopack_update.target_version(info)
+            self._pending_update = info
+            # ft.Button에는 text 필드가 없다 — .content 를 갱신해야 라벨이 실제로 바뀐다.
+            self.update_btn.content = f"v{version} 로 업데이트 후 재시작"
             self.update_btn.icon = ft.Icons.SYSTEM_UPDATE
             if self.update_btn.page is not None:
                 self.update_btn.update()
             self._set_update_status(
-                f"새 버전 v{release.version} 사용 가능 (현재 v{__version__})", ft.Colors.GREEN
+                f"새 버전 v{version} 사용 가능 (현재 v{__version__})", ft.Colors.GREEN
             )
         elif manual:
             self._set_update_status(f"최신 버전입니다 (v{__version__}).", self._muted_color)
@@ -412,44 +471,29 @@ class CrawlerGUI:
             self.update_btn.update()
 
     def _download_and_apply(self) -> None:
-        """새 릴리스를 내려받아 압축을 풀고 사이드카로 교체·재시작한다."""
-        release = self._pending_release
-        if release is None:
+        """새 릴리스를 내려받아 적용하고 앱을 재시작한다(Velopack이 교체를 담당한다)."""
+        info = self._pending_update
+        if info is None:
             self._reset_applying()
             return
-        # 개발 실행(비-frozen)에서는 자기 교체를 하면 안 된다(배포된 exe에서만 동작).
-        if not updater.is_packaged():
+        # Velopack 설치 컨텍스트가 아니면 교체할 대상이 없다(개발 실행, 또는 macOS에서
+        # .app 번들 밖으로 꺼내 실행한 경우). 플랫폼을 가리지 않는 하나의 조건이다.
+        if not velopack_update.is_installed():
             self._set_update_status(
-                "개발 환경에서는 업데이트를 적용하지 않습니다(배포된 exe에서만 동작).",
+                "설치본이 아니어서 자동 업데이트를 적용할 수 없습니다. "
+                "릴리스 페이지에서 설치 프로그램을 받아 주세요.",
                 ft.Colors.AMBER,
             )
+            self._pending_update = None
             self._reset_applying()
             return
-        # 자동 적용은 현재 Windows 전용이다(다른 플랫폼의 사이드카·롤백 경로는 배포 대상이 아님).
-        if sys.platform != "win32":
-            self._set_update_status(
-                "이 플랫폼에서는 자동 적용을 지원하지 않습니다. "
-                "릴리스 페이지에서 수동으로 받아주세요.",
-                ft.Colors.AMBER,
-            )
-            self._pending_release = None
-            self._reset_applying()
-            return
-        if release.sha256 is None:
-            self._set_update_status("무결성 digest 없음 — TLS 로만 검증됩니다.", ft.Colors.AMBER)
-        dl_dir = Path(tempfile.mkdtemp(prefix="naver_update_"))
-        install = updater.install_exe()
-        extract_dir = updater.staging_dir(install)
         try:
-            self._set_update_status(f"v{release.version} 다운로드 중… 0%", None)
-            zip_path = updater.download(release, dl_dir, progress_cb=self._download_progress)
-            self._set_update_status("압축 해제 중…", None)
-            new_exe = updater.extract(zip_path, extract_dir, expected_name=updater.APP_EXE_NAME)
-            zip_path.unlink(missing_ok=True)
+            self._set_update_status("다운로드 중… 0%", None)
+            velopack_update.download(info, self._download_progress)
         except Exception as exc:
-            logger.error("업데이트 실패", exc_info=True)
+            logger.error("업데이트 다운로드 실패", exc_info=True)
             self._set_update_status(f"업데이트 실패: {exc}", ft.Colors.RED)
-            self._pending_release = None
+            self._pending_update = None
             self._reset_applying()
             return
         self._set_update_status("업데이트를 적용하고 재시작합니다…", ft.Colors.GREEN)
@@ -460,10 +504,10 @@ class CrawlerGUI:
         # 상태 문구가 화면에 반영될 짧은 여유를 주고 교체·재시작을 시작한다.
         time.sleep(0.4)
         try:
-            updater.apply_and_restart(new_exe, app_exe=updater.APP_EXE_NAME, install_path=install)
+            velopack_update.apply_and_restart(info)
         except Exception as exc:
-            # 여기까지 오면 프로세스가 os._exit(0)로 종료돼야 정상이므로, 예외가 났다는 건
-            # 사이드카를 띄우지 못했다는 뜻이다. 앱은 계속 살아있으니 재시도할 수 있게 한다.
+            # 여기까지 오면 Velopack이 프로세스를 재시작해야 정상이다. 예외가 났다는 건
+            # 적용을 시작하지 못했다는 뜻이므로 재시도할 수 있게 되돌린다.
             logger.error("업데이트 적용 실패", exc_info=True)
             self._set_update_status(f"업데이트 적용 실패: {exc}", ft.Colors.RED)
             self._reset_applying()
@@ -472,7 +516,7 @@ class CrawlerGUI:
         self._set_update_status(f"다운로드 중… {int(frac * 100)}%", None)
 
     def _open_folder(self, _e: ft.ControlEvent) -> None:
-        path = Path(self.out_field.value.strip() or "output").resolve()
+        path = Path(self.out_field.value.strip() or _default_output_dir()).resolve()
         if not path.exists():
             return
         if sys.platform == "win32":
@@ -489,7 +533,7 @@ class CrawlerGUI:
 
     def _refresh_failures(self) -> None:
         """현재 출력 폴더의 이전 실패 건수에 따라 재시도 체크박스를 보인다."""
-        out_dir = Path(self.out_field.value.strip() or "output")
+        out_dir = Path(self.out_field.value.strip() or _default_output_dir())
         try:
             count = len(FailureStore.load(out_dir))
         except CrawlerError:
@@ -580,13 +624,15 @@ class CrawlerGUI:
         if menu_raw and not menu_raw.isdigit():
             raise ValueError("카페 게시판 menuId는 숫자여야 합니다.")
         return {
-            "out_dir": Path(self.out_field.value.strip() or "output"),
+            "out_dir": Path(self.out_field.value.strip() or _default_output_dir()),
             "delay": delay,
             "max_retries": max_retries,
             "force": bool(self.force_cb.value),
             "cookie": (self.cookie_field.value or "").strip(),
             "menu_id": int(menu_raw) if menu_raw else None,
-            "log_dir": Path("logs"),
+            # 로그는 앱 데이터 아래 절대 경로다 — cwd가 보장되지 않고, 설치 폴더는
+            # 업데이트 때 통째로 교체된다.
+            "log_dir": app_data_dir() / "logs",
             "log_level": logging.getLevelNamesMapping()[self.loglevel_dd.value],
         }
 
@@ -784,11 +830,12 @@ def _view(page: ft.Page) -> None:
 def main() -> None:
     """GUI 실행 진입점(``naver-post-crawler-gui``).
 
-    헬퍼 모드(:data:`~naver_post_crawler.cookie_login.HELPER_FLAG`)로 재실행되면 GUI
-    대신 로그인 웹뷰 헬퍼를 띄운다. dev·flet pack 모두 이 진입점을 통과하므로 여기서
-    한 번에 분기한다.
+    헬퍼 모드(:data:`~naver_post_crawler.cookie_login.HELPER_ENV`)로 재실행되면 GUI
+    대신 로그인 웹뷰 헬퍼를 띄운다. 개발 실행·배포본 모두 이 진입점을 통과하므로 여기서
+    한 번에 분기한다. 판정은 ``sys.argv``가 아니라 환경변수로 한다 — 배포본의 Flutter
+    러너가 인자를 보면 파이썬을 아예 실행하지 않기 때문이다(cookie_login 모듈 참고).
     """
-    if HELPER_FLAG in sys.argv:
+    if is_helper_mode():
         raise SystemExit(run_helper())
     ft.run(_view)
 

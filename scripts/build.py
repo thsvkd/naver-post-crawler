@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""flet pack(PyInstaller)으로 단일 실행파일을 만들고 배포용 zip으로 압축한다.
+"""``flet build`` 네이티브 앱 빌드 + Velopack 설치기 패키징.
+
+실행한 OS를 감지해 그 OS용 데스크톱 앱을 만들고, 그것을 Velopack 설치기/업데이트
+패키지로 포장한다. Windows 빌드는 Windows에서만, macOS 빌드는 macOS에서만 된다
+(``flet build``와 ``vpk`` 양쪽의 제약이라 우회할 수 없다).
 
 사용:
     python scripts/build.py
 
 결과물:
-  - dist/naver-post-crawler(.exe): 단일 실행파일(Windows .exe / Linux 바이너리 / macOS .app).
-  - dist/naver-post-crawler-<target>.zip: 업데이터(naver_post_crawler.updater)와 GitHub
-    Releases가 소비하는 릴리스 에셋. win/linux는 naver-post-crawler/ 폴더 안에 실행파일을
-    담아 압축하고(풀면 naver-post-crawler/<exe> 구조), macOS는 .app 번들을 그대로 압축한다.
+    dist/naver-post-crawler-<target>/   flet build 번들(설치기의 원본)
+    dist/velopack/                      Windows: *-Setup.exe, *.nupkg, releases.win.json
+                                        macOS:   *-Setup.pkg, *.nupkg, releases.osx.json
+                                        → GitHub 릴리스에 올리면 자동 업데이트가 동작한다.
 
-Flutter/네이티브 툴체인은 필요 없다(PyInstaller가 Python 런타임을 그대로 묶는다). 필요한
-의존성(pyinstaller, flet-cli)은 dev 그룹에 있어 'uv sync'가 준비한다.
+서명: 기본은 **미서명**이다. ``NPC_SIGN_*`` 환경변수를 채우면 scripts/sign.py가 인자를
+만들어 붙인다(자세한 내용은 그 모듈 참고).
 
-앱 데이터 저장 위치: naver_post_crawler.cookie.app_data_dir()이 실행 파일 옆 storage/
-에 저장한다(PyInstaller frozen 감지). 폴더째 옮겨도 데이터가 따라오는 포터블 동작이다.
+사전 준비:
+    - Windows: Visual Studio "Desktop development with C++" 워크로드(없으면 안내).
+    - macOS: Xcode 명령행 도구.
+    - 공통: Velopack CLI(``dotnet tool install -g vpk``). Flutter SDK는 flet build가 받아 온다.
 
 (개발 중 빠른 실행은 'python scripts/run.py --gui')
 """
@@ -24,139 +30,309 @@ from __future__ import annotations
 import os
 import platform
 import shutil
-import zipfile
+import subprocess
 from pathlib import Path
 
-from _common import REPO_ROOT, check, fail, info, require_uv
+import flet_template
+import sign
+from _common import REPO_ROOT, check, fail, info, require_uv, run, sync_version
 
+from naver_post_crawler.velopack_update import REPO_URL
+
+# flet build 메타데이터.
 _PRODUCT = "Naver Blog Backup"
+_ORG = "com.thsvkd"
+_AUTHORS = "thsvkd"
 
-# flet pack(PyInstaller) 단일 실행파일 빌드 설정.
-# 진입점은 src/main.py다. pack은 이 스크립트의 디렉터리(src/)를 import 경로에 올리므로
-# naver_post_crawler 패키지를 그대로 찾을 수 있다.
-_PACK_ENTRY = REPO_ROOT / "src" / "main.py"
-_PACK_NAME = "naver-post-crawler"  # 생성될 실행파일 이름
-_PACK_DIST = REPO_ROOT / "dist"  # 단일 실행파일이 놓일 디렉터리
-# flet pack은 cwd/build 디렉터리를 통째로 지운다. 저장소 루트에서 바로 돌리면 다른
-# build/ 산출물과 충돌할 수 있어 pack은 전용 작업 디렉터리에서 돌린다.
-_PACK_WORK = REPO_ROOT / ".pack-build"
+# Velopack 패키징 식별자. **바꾸면 기존 설치본과의 연결이 끊긴다**(설치 경로·업데이트
+# 식별자가 이 값으로 정해진다). 앱 데이터 폴더 이름(naver-post-crawler)과 일부러 다르게
+# 둔다 — Windows 기본 설치 경로가 ``%LocalAppData%\<PackId>\`` 라서, 같은 이름이면
+# 언인스톨할 때 사용자 쿠키까지 함께 지워진다.
+PACK_ID = "NaverPostCrawler"
+# Windows 번들 루트의 앱 실행 파일 이름(vpk --mainExe).
+APP_EXE_WINDOWS = "naver-post-crawler.exe"
 
+# 타깃별 Velopack 채널. 이 값이 릴리스 피드 파일 이름(releases.<채널>.json)을 정한다.
+# Windows와 macOS 산출물을 같은 GitHub 릴리스 태그에 함께 올려도 파일명이 겹치지 않는 이유다.
+_CHANNELS = {"windows": "win", "macos": "osx"}
 
-def _pack_artifact_path() -> Path:
-    """현재 OS에서 flet pack이 만드는 단일 실행파일/번들의 경로를 돌려준다."""
-    system = platform.system()
-    if system == "Windows":
-        return _PACK_DIST / f"{_PACK_NAME}.exe"
-    if system == "Darwin":
-        return _PACK_DIST / f"{_PACK_NAME}.app"  # macOS는 .app 번들
-    return _PACK_DIST / _PACK_NAME
+# Visual Studio C++ 빌드 도구 워크로드 식별자.
+_VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
 
-def _clean_prior_artifact() -> None:
-    """이전 단일 실행파일을 미리 지운다. 잠겨 있으면 원인을 짚어 명확히 안내한다.
+def target_for(system: str) -> str:
+    """``platform.system()`` 값을 flet build 타깃 이름으로 바꾼다.
 
-    flet pack은 dist를 rmtree(ignore_errors=True)로 지우는데, 결과물이 잠겨 있으면
-    (앱이 실행 중이거나 백신이 검사 중) 조용히 남겨두고 PyInstaller의 EXE 단계가
-    os.remove에서 PermissionError로 죽는다 — 불친절한 트레이스백이 그대로 노출된다.
-    여기서 먼저 지워 보고, 실패하면 사용자가 조치할 수 있게 원인을 안내한다.
+    Linux는 배포 대상이 아니다(D-13). 조용히 windows로 떨어지면 엉뚱한 산출물을 만들므로
+    지원하지 않는 OS에서는 즉시 중단한다.
     """
-    artifact = _pack_artifact_path()
-    if not artifact.exists():
-        return
-    try:
-        if artifact.is_dir():  # macOS .app 번들
-            shutil.rmtree(artifact)
-        else:
-            artifact.unlink()
-    except OSError:
-        fail(
-            f"기존 결과물을 지울 수 없습니다(잠김): {artifact}\n"
-            "  실행 중인 앱을 모두 닫은 뒤 다시 시도하세요.\n"
-            "  (백신 실시간 검사가 파일을 잡고 있을 수도 있습니다.)"
+    target = {"Windows": "windows", "Darwin": "macos"}.get(system)
+    if target is None:
+        fail(f"지원하지 않는 OS입니다: {system} (배포 대상은 Windows와 macOS입니다)")
+    return target
+
+
+def channel_for(target: str) -> str:
+    """타깃의 Velopack 채널 이름."""
+    channel = _CHANNELS.get(target)
+    if channel is None:
+        fail(f"채널을 알 수 없는 타깃입니다: {target}")
+    return channel
+
+
+def current_target() -> str:
+    """현재 OS의 빌드 타깃."""
+    return target_for(platform.system())
+
+
+# -- Windows 사전 점검 --------------------------------------------------------
+def _vswhere_path() -> Path:
+    program_files_x86 = os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")
+    return Path(program_files_x86) / "Microsoft Visual Studio" / "Installer" / "vswhere.exe"
+
+
+def ensure_windows_toolchain() -> None:
+    """Windows 네이티브 빌드에 필요한 VS C++ 빌드 도구를 확인한다(없으면 안내 후 중단).
+
+    ``flet pack``(PyInstaller)에는 필요 없던 요구사항이다 — ``flet build``는 Flutter 러너를
+    실제로 컴파일하므로 네이티브 툴체인이 있어야 한다.
+    """
+    vswhere = _vswhere_path()
+    if vswhere.exists():
+        result = subprocess.run(
+            [
+                str(vswhere),
+                "-products",
+                "*",
+                "-requires",
+                _VC_TOOLS_COMPONENT,
+                "-property",
+                "installationPath",
+            ],
+            capture_output=True,
+            text=True,
         )
-
-
-def verify_pack_artifact() -> None:
-    """flet pack(PyInstaller) 결과물(단일 실행파일/번들)이 생겼는지 확인한다."""
-    if not _PACK_DIST.exists():
-        fail(f"빌드가 끝났지만 {_PACK_DIST} 가 없습니다.")
-    artifact = _pack_artifact_path()
-    if not artifact.exists():
-        fail(f"빌드가 끝났지만 결과물을 찾지 못했습니다: {artifact}")
-    info(f"완료: {artifact}")
-
-
-def pack_app(build_env: dict[str, str]) -> None:
-    """`flet pack`으로 단일 실행파일을 만든다."""
-    # 이전 결과물이 잠겨 있으면(앱 실행 중 등) 먼저 명확히 안내하고 멈춘다.
-    # 그러지 않으면 flet pack이 마지막 단계에서 PermissionError 트레이스백으로 죽는다.
-    _clean_prior_artifact()
-
-    # flet pack은 cwd/build를 통째로 지우므로 전용 작업 디렉터리 안에서 실행한다.
-    if _PACK_WORK.exists():
-        shutil.rmtree(_PACK_WORK)
-    _PACK_WORK.mkdir(parents=True)
-
-    info("flet pack (단일 실행파일)")
-    check(
-        ["uv", "run", "flet", "pack", str(_PACK_ENTRY),
-         "--name", _PACK_NAME, "--product-name", _PRODUCT,
-         "--distpath", str(_PACK_DIST), "--yes"],
-        env=build_env,
-        cwd=_PACK_WORK,
-    )
-
-    # PyInstaller 중간 산출물(작업 디렉터리)은 결과물이 아니므로 정리한다.
-    shutil.rmtree(_PACK_WORK, ignore_errors=True)
-    verify_pack_artifact()
-
-
-def _current_pack_target() -> str:
-    """현재 OS의 릴리스 타깃 이름(windows/macos/linux). _pack_artifact_path와 같은 매핑."""
-    return {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}.get(
-        platform.system(), "windows"
+        if result.stdout.strip():
+            info("Visual Studio C++ 빌드 도구 확인됨")
+            return
+    fail(
+        "Visual Studio C++ 빌드 도구('Desktop development with C++')가 필요합니다.\n"
+        "  https://visualstudio.microsoft.com/downloads/ 에서 Build Tools를 설치하거나\n"
+        "  winget install --id Microsoft.VisualStudio.2022.BuildTools \\\n"
+        '    --override "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 '
+        '--includeRecommended --passive"'
     )
 
 
-def compress_pack_artifact() -> None:
-    """flet pack 결과물을 릴리스 에셋 zip(dist/naver-post-crawler-<target>.zip)으로 만든다.
+def flet_version() -> str:
+    """빌드에 쓰이는 flet 버전(패치용 빌드 템플릿을 같은 버전으로 받으려고 확인한다).
 
-    업데이터(naver_post_crawler.updater)가 소비하는 에셋이다. updater.extract() 계약에
-    맞춰, 단일 파일(win .exe/linux 바이너리)은 naver-post-crawler/ 폴더 안에 담아 압축
-    하고, macOS .app 번들은 최상위 폴더 이름을 보존해 단일 디렉터리로 풀리게 한다.
-    zip을 풀면 naver-post-crawler/<exe> 구조가 되어, exe 실행 시 생성되는 storage/ 등
-    부산물이 같은 폴더 안에 모인다.
+    ``flet build``가 템플릿 태그로 쓰는 값과 정확히 같아야 하므로, pyproject의 핀을
+    파싱하지 않고 동기화된 환경에서 직접 읽는다.
     """
-    target = _current_pack_target()
-    artifact = _pack_artifact_path()
-    zip_path = _PACK_DIST / f"{_PACK_NAME}-{target}.zip"
-    if zip_path.exists():
-        zip_path.unlink()
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        if artifact.is_dir():  # macOS .app 번들: 최상위 폴더 이름을 보존해 통째로 압축.
-            for path in sorted(artifact.rglob("*")):
-                if path.is_file():
-                    zf.write(path, arcname=str(path.relative_to(artifact.parent)))
-        else:  # win .exe / linux 바이너리: naver-post-crawler/ 폴더 안에 담아 압축한다.
-            # 압축을 풀면 naver-post-crawler/<exe> 구조가 되어, exe 실행 시 생성되는
-            # storage/ 등의 부산물이 같은 폴더 안에 모인다.
-            zf.write(artifact, arcname=f"{_PACK_NAME}/{artifact.name}")
-    info(f"릴리스 에셋: {zip_path}")
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "python",
+            "-c",
+            "import flet.version as v; print(v.flet_version)",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    version = result.stdout.strip()
+    if result.returncode != 0 or not version:
+        fail(f"flet 버전을 확인하지 못했습니다: {result.stderr.strip() or result.stdout.strip()}")
+    return version
+
+
+# -- 커맨드 조립(순수 함수) ---------------------------------------------------
+def flet_build_command(target: str, *, template_dir: Path | None) -> list[str]:
+    """``flet build`` 실행 커맨드.
+
+    Windows에서만 패치된 템플릿을 넘긴다 — 러너 진입점에서 Velopack 훅을 처리하고 첫 창을
+    앱 크기로 만들기 위해서다(scripts/flet_template.py). macOS 러너는 패치하지 않으므로
+    ``--template``을 붙이면 존재하지 않는 패치를 요구하는 셈이 된다.
+    """
+    cmd = ["uv", "run", "--no-sync", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG]
+    if template_dir is not None:
+        cmd += ["--template", str(template_dir)]
+    return cmd
+
+
+def velopack_output_dir() -> Path:
+    """Velopack 산출물 폴더(릴리스에 올릴 파일들이 모이는 곳)."""
+    return REPO_ROOT / "dist" / "velopack"
+
+
+def vpk_pack_args(target: str, *, bundle_dir: Path, version: str) -> list[str]:
+    """``vpk pack`` 인자(vpk 실행 파일 경로는 뺀 나머지).
+
+    타깃별로 인자 체계가 다르다. Windows는 번들 폴더와 그 안의 실행 파일 이름을 주고,
+    macOS는 ``.app`` 번들 자체를 준다(진입점은 Info.plist에 있다). 서명 인자는 환경변수가
+    채워졌을 때만 붙는다(기본은 미서명).
+    """
+    args = [
+        "pack",
+        "--packId",
+        PACK_ID,
+        "--packVersion",
+        version,
+        "--packDir",
+        str(bundle_dir),
+        "--packTitle",
+        _PRODUCT,
+        "--packAuthors",
+        _AUTHORS,
+        "--channel",
+        channel_for(target),
+        "--outputDir",
+        str(velopack_output_dir()),
+    ]
+    if target == "windows":
+        args += ["--mainExe", APP_EXE_WINDOWS]
+        params = sign.velopack_sign_params_win()
+        if params:
+            args += ["--signParams", params]
+    else:
+        # 설치기(.pkg)만 배포한다(D-2). Portable.zip은 올리지 않으므로 만들지도 않는다.
+        args.append("--noPortable")
+        args += sign.velopack_sign_args_macos()
+    return args
+
+
+def vpk_download_args(target: str) -> list[str]:
+    """``vpk download github`` 인자 — 델타 계산의 기준이 될 이전 릴리스를 받아 온다.
+
+    채널이 pack과 같아야 한다. 다르면 기준을 못 찾아 매번 전체 패키지를 만든다.
+    """
+    return [
+        "download",
+        "github",
+        "--repoUrl",
+        REPO_URL,
+        "--outputDir",
+        str(velopack_output_dir()),
+        "--channel",
+        channel_for(target),
+    ]
+
+
+# -- 결과물 정리/검증 --------------------------------------------------------
+def stash_output(target: str) -> Path:
+    """flet build 결과(build/<target>)를 배포 폴더로 옮긴다."""
+    src = REPO_ROOT / "build" / target
+    if not src.exists() or not any(src.iterdir()):
+        fail(f"빌드가 끝났지만 build/{target}에 결과물이 없습니다.")
+    dst = REPO_ROOT / "dist" / f"naver-post-crawler-{target}"
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))
+    return dst
+
+
+def verify_artifact(dst: Path, target: str) -> None:
+    """배포 폴더에 그 타깃의 실행 산출물이 실제로 생겼는지 확인한다.
+
+    flet이 오류를 내고도 종료 코드 0으로 끝나는 경우가 있어, "폴더가 비어 있지 않다"로는
+    부족하다. Windows는 번들 루트의 ``.exe``를, macOS는 ``.app`` 번들을 확인한다.
+    """
+    if target == "windows":
+        exes = sorted(dst.glob("*.exe"))
+        if not exes:
+            fail(f"빌드가 끝났지만 {dst} 최상위에서 앱 .exe를 찾지 못했습니다.")
+        info(f"완료(앱 실행파일): {exes[0]}")
+        return
+    apps = sorted(dst.glob("*.app"))
+    if not apps:
+        fail(f"빌드가 끝났지만 {dst}에서 .app 번들을 찾지 못했습니다.")
+    info(f"완료(앱 번들): {apps[0]}")
+
+
+def app_bundle(dst: Path) -> Path:
+    """macOS 배포 폴더 안의 ``.app`` 번들 경로(vpk pack의 packDir)."""
+    apps = sorted(dst.glob("*.app"))
+    if not apps:
+        fail(f"{dst}에서 .app 번들을 찾지 못했습니다.")
+    return apps[0]
+
+
+# -- Velopack 패키징 ---------------------------------------------------------
+def find_vpk() -> str:
+    """Velopack CLI(vpk) 경로. PATH 또는 dotnet 글로벌 툴 기본 위치에서 찾는다."""
+    exe = shutil.which("vpk")
+    if exe:
+        return exe
+    candidate = Path.home() / ".dotnet" / "tools" / ("vpk.exe" if os.name == "nt" else "vpk")
+    if candidate.exists():
+        return str(candidate)
+    fail("vpk(Velopack CLI)를 찾지 못했습니다. 설치: dotnet tool install -g vpk")
+
+
+def velopack_pack(
+    *,
+    bundle_dir: Path,
+    version: str,
+    target: str,
+    vpk: str,
+    runner=run,
+) -> Path:
+    """번들을 Velopack 설치기 + 업데이트 패키지로 만든다.
+
+    기존 GitHub 릴리스를 **먼저 받아**(``vpk download github``) 그 위에 델타를 만든다.
+    첫 릴리스거나 네트워크가 안 되면 델타 없이 전체 릴리스로 진행한다.
+    """
+    out = velopack_output_dir()
+    out.mkdir(parents=True, exist_ok=True)
+
+    info("기존 Velopack 릴리스 조회(델타 기준)…")
+    if runner([vpk, *vpk_download_args(target)], cwd=REPO_ROOT) != 0:
+        info("  기존 릴리스 없음/조회 실패 → 전체 릴리스로 진행(델타 없음).")
+
+    info("Velopack 패키징…")
+    pack_cmd = [vpk, *vpk_pack_args(target, bundle_dir=bundle_dir, version=version)]
+    if runner(pack_cmd, cwd=REPO_ROOT) != 0:
+        fail("vpk pack이 실패했습니다.")
+    return out
 
 
 def main() -> int:
     require_uv()
+    target = current_target()
 
-    # flet pack의 진행 표시(rich)는 체크마크 등 이모지를 stdout에 쓰는데, 한국어
-    # Windows 콘솔 기본 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로
-    # 빌드가 죽는다. 자식 Python을 UTF-8 모드로 강제해 회피한다(다른 OS에선 무해).
+    if target == "windows":
+        ensure_windows_toolchain()
+
+    # pyproject.toml(SSOT)의 버전을 __init__.py에 반영한 뒤(flet build가 이 파일을 그대로
+    # 복사해 번들에 담으므로 빌드 전에 최신이어야 한다) 빌드에 쓸 버전으로 쓴다.
+    version = sync_version()
+
+    # flet build의 진행 표시(rich)가 이모지를 stdout에 쓰는데 한국어 Windows 콘솔 기본
+    # 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로 죽는다. 자식 Python을
+    # UTF-8 모드로 강제해 회피한다(다른 OS엔 무해).
     build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
 
-    pack_app(build_env)
-    compress_pack_artifact()
+    template_dir = flet_template.prepare(flet_version()) if target == "windows" else None
+    info(f"flet build {target}")
+    check(flet_build_command(target, template_dir=template_dir), env=build_env)
+
+    dst = stash_output(target)
+    verify_artifact(dst, target)
+    if target == "windows":
+        # 앱 exe 서명(NPC_SIGN_* 설정 시). 미지정이면 미서명으로 계속한다.
+        sign.maybe_sign_bundle(dst)
+
+    pack_dir = dst if target == "windows" else app_bundle(dst)
+    out = velopack_pack(bundle_dir=pack_dir, version=version, target=target, vpk=find_vpk())
+    info(f"Velopack 산출물: {out}")
+    info(f"릴리스 업로드는 'python scripts/deploy.py'로 진행하세요 (태그 v{version}).")
     return 0
 
 

@@ -15,13 +15,12 @@ __pycache__/
 # 로그
 /logs/
 
-# flet pack(단일 실행파일) 산출물과 PyInstaller 작업 디렉터리
+# 빌드 산출물: flet build 번들 + Velopack 설치기/업데이트 패키지(dist/velopack/).
 /dist/
-/.pack-build/
-
-# 과거 flet build(네이티브 빌드, 현재는 scripts/build.py에서 제거됨) 산출물이 로컬에
-# 남아 있을 수 있어 계속 무시한다.
+# flet build 작업 디렉터리. 패치된 flet 빌드 템플릿 캐시(build/_flet_template/)도 여기 있다.
 /build/
+# 과거 flet pack(PyInstaller) 작업 디렉터리가 로컬에 남아 있을 수 있어 계속 무시한다.
+/.pack-build/
 /.flet-template/
 
 # 에이전트·도구 상태 (프로젝트 산출물 아님)

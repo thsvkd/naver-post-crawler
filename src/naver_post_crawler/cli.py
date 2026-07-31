@@ -27,7 +27,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__, updater
+from . import __version__, velopack_update
 from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
@@ -167,20 +167,7 @@ def main(
     # --check-update: 최신 릴리스만 확인하고 종료한다(TARGET 불필요). 네트워크 오류는
     # 트레이스백 대신 경고로 삼켜 크롤링 없이 조용히 끝낸다.
     if check_update:
-        try:
-            release = updater.check_latest(__version__, updater.current_target())
-        except Exception as exc:
-            # em-dash(U+2014)는 cp949 콘솔에서 인코딩되지 않아, 리다이렉트 시 출력이
-            # UnicodeEncodeError로 죽는다. 네트워크 실패를 조용히 알리려면 ASCII 구분자를 쓴다.
-            console.print(f"[yellow]업데이트 확인 실패[/yellow]: {exc}")
-            return
-        if release is None:
-            console.print(f"현재 최신 버전입니다 (v{__version__}).")
-        else:
-            console.print(
-                f"새 버전 v{release.version} 사용 가능 (현재 v{__version__}). "
-                f"릴리스: {release.asset_url}"
-            )
+        _check_update()
         return
     if not target:
         raise click.UsageError("TARGET을 지정하세요 (또는 --check-update / --version).")
@@ -226,6 +213,32 @@ def main(
         retry_flag=retry_flag,
         force=force,
     )
+
+
+def _check_update() -> None:
+    """``--check-update`` — 새 버전이 있는지 확인해 한 줄로 알린다.
+
+    설치본이 아니면(개발 실행이나 ``uv run``) 적용은 앱이 대신 해 줄 수 없으므로 확인
+    결과와 함께 릴리스 페이지를 안내한다. 실제 적용은 GUI(설치본)가 담당한다 — CLI는
+    ``flet build`` 번들에 들어가지 않기 때문이다.
+    """
+    installed = velopack_update.is_installed()
+    try:
+        info = velopack_update.check()
+    except Exception as exc:
+        # em-dash(U+2014)는 cp949 콘솔에서 인코딩되지 않아, 리다이렉트 시 출력이
+        # UnicodeEncodeError로 죽는다. 네트워크 실패를 조용히 알리려면 ASCII 구분자를 쓴다.
+        console.print(f"[yellow]업데이트 확인 실패[/yellow]: {exc}")
+        return
+    if info is None:
+        console.print(f"현재 최신 버전입니다 (v{__version__}).")
+        return
+    version = velopack_update.target_version(info)
+    console.print(f"새 버전 v{version} 사용 가능 (현재 v{__version__}).")
+    if installed:
+        console.print("앱(GUI)을 열어 '업데이트' 버튼으로 적용하세요.")
+    else:
+        console.print(f"설치본이 아닙니다. 릴리스 페이지: {velopack_update.REPO_URL}/releases")
 
 
 def _build_blog(

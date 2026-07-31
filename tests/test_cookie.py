@@ -174,19 +174,51 @@ def test_app_data_dir_uses_flet_storage_env(
     assert target.exists()  # 없으면 만든다
 
 
-def test_app_data_dir_uses_exe_adjacent_storage_when_frozen(
+# Velopack은 Windows에서 %LocalAppData%\<PackId>\current\를, macOS에서 .app 번들을 통째로
+# 교체한다. 실행 파일 옆 storage/에 쓰면 업데이트 한 번에 쿠키가 통째로 사라지므로,
+# FLET_APP_STORAGE_DATA가 없을 때의 폴백은 반드시 플랫폼별 사용자 데이터 경로여야 한다.
+# sys.frozen은 PyInstaller 전용 플래그라 flet build 산출물에서는 서지도 않는다.
+
+
+def test_app_data_dir_never_uses_bundle_adjacent_storage_on_macos(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # covers: Test-25
     monkeypatch.delenv("FLET_APP_STORAGE_DATA", raising=False)
-    fake_exe = tmp_path / "naver-post-crawler" / "naver-post-crawler.exe"
+    fake_exe = tmp_path / "NaverPostCrawler.app" / "Contents" / "MacOS" / "naver-post-crawler"
     fake_exe.parent.mkdir(parents=True)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(fake_exe))
+    monkeypatch.setattr(sys, "platform", "darwin")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
 
     result = app_data_dir()
 
-    assert result == fake_exe.parent / "storage"
+    assert result == home / "Library" / "Application Support" / "naver-post-crawler"
     assert result.exists()  # 없으면 만든다
+    assert not (fake_exe.parent / "storage").exists(), "번들 내부에 저장소를 만들면 안 된다"
+
+
+def test_app_data_dir_never_uses_exe_adjacent_storage_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-25
+    monkeypatch.delenv("FLET_APP_STORAGE_DATA", raising=False)
+    fake_exe = tmp_path / "current" / "naver-post-crawler.exe"
+    fake_exe.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(fake_exe))
+    monkeypatch.setattr(sys, "platform", "win32")
+    local_app_data = tmp_path / "LocalAppData"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+
+    result = app_data_dir()
+
+    assert result == local_app_data / "naver-post-crawler"
+    assert result.exists()  # 없으면 만든다
+    assert not (fake_exe.parent / "storage").exists(), "설치 폴더(current)에 저장하면 안 된다"
 
 
 def test_app_data_dir_prefers_flet_storage_env_over_frozen(

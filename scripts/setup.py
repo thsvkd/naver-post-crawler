@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 from _common import REPO_ROOT, check, info, require_uv
 
 # git pre-commit hook 본문. Git은 Windows에서도 번들된 sh로 hook을 실행하므로
@@ -35,13 +38,29 @@ def install_pre_commit_hook() -> None:
     hook_path.chmod(0o755)
 
 
+def check_release_tooling() -> None:
+    """릴리스 빌드에 필요한 도구를 확인한다(없어도 개발은 되므로 안내만 한다).
+
+    ``vpk``는 설치기·업데이트 패키지를 만드는 Velopack CLI다. 개발·테스트에는 필요 없고
+    ``scripts/build.py``를 돌릴 때만 필요하므로 여기서 막지 않고 알려만 준다.
+    """
+    if shutil.which("vpk") is None and not (Path.home() / ".dotnet" / "tools" / "vpk").exists():
+        info(
+            "참고: Velopack CLI(vpk)가 없습니다. 릴리스 빌드를 하려면 설치하세요 — "
+            "dotnet tool install -g vpk"
+        )
+
+
 def main() -> int:
     require_uv()
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
     install_pre_commit_hook()
-    info("완료. 'python scripts/run.py' 로 GUI를, "
-         "'python scripts/run.py <블로그아이디>' 로 CLI 백업을 실행할 수 있습니다.")
+    check_release_tooling()
+    info(
+        "완료. 'python scripts/run.py' 로 GUI를, "
+        "'python scripts/run.py <블로그아이디>' 로 CLI 백업을 실행할 수 있습니다."
+    )
     return 0
 
 

@@ -7,14 +7,27 @@ Flet 런타임 없이 ``_set_status``/``_flush_status``의 계약만 검증한�
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import flet as ft
 import pytest
 
+import naver_post_crawler.cookie_login as cookie_login_mod
 import naver_post_crawler.gui as gui_mod
+from naver_post_crawler.cookie import app_data_dir
 from naver_post_crawler.gui import CrawlerGUI, _first_picked_path
+
+
+def _helper_const(name: str) -> str:
+    """W-4가 ``cookie_login``에 신설할 상수를 읽는다(수집 오류 대신 단언 실패로 드러나게)."""
+    assert hasattr(cookie_login_mod, name), (
+        f"cookie_login에 {name} 상수가 있어야 한다 — 헬퍼 모드는 환경변수로 전달한다(W-4)."
+    )
+    return getattr(cookie_login_mod, name)
 
 
 class _FakeText:
@@ -214,7 +227,11 @@ class _FakeBuildPage:
 
 def _bare_gui_with_build() -> CrawlerGUI:
     """``_build()``까지 실제로 실행해 컨트롤 배선을 검증하되, 파일/환경을 건드리는
-    새로고침 호출은 no-op으로 막은 인스턴스를 만든다."""
+    새로고침 호출은 no-op으로 막은 인스턴스를 만든다.
+
+    ``__init__``을 건너뛰므로 ``_build()``는 영속 설정을 스스로 읽어야 한다
+    (:func:`gui_mod._load_gui_settings`). 이 호출자는 앱을 새로 여는 것과 같다.
+    """
     gui = object.__new__(CrawlerGUI)
     gui.page = _FakeBuildPage()  # type: ignore[assignment]
     gui._refresh_failures = lambda: None  # type: ignore[method-assign]
@@ -351,3 +368,154 @@ def test_cookie_login_ignores_reentrant_click_while_busy(
     gui._cookie_login(object())
 
     assert fake_page.run_thread_calls == [gui._run_cookie_login]
+
+
+# -- 헬퍼 진입 판정(W-4) ----------------------------------------------------------------
+# 주의: 여기부터의 covers 태그는 docs/handoff-velopack-migration.md §5 번호다. 위쪽
+# 테스트들의 Test-7~9는 앱 내 웹뷰 로그인 기능의 이전 핸드오프 번호이며 별개 체계다.
+#
+# main()은 GUI와 로그인 웹뷰 헬퍼가 갈라지는 유일한 지점이다. 배포본에서는 argv를 쓸 수
+# 없으므로(flet 러너의 '인자 있으면 개발자 모드' 분기) 환경변수만 보고 갈라져야 한다.
+
+
+def test_main_enters_helper_when_env_is_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-29
+    monkeypatch.setenv(_helper_const("HELPER_ENV"), _helper_const("HELPER_MODE"))
+    monkeypatch.setattr(gui_mod, "run_helper", lambda *_a, **_kw: 7)
+    monkeypatch.setattr(
+        gui_mod.ft, "run", lambda *_a, **_kw: pytest.fail("헬퍼 모드에서 GUI를 띄우면 안 된다")
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        gui_mod.main()
+
+    assert excinfo.value.code == 7
+
+
+def test_main_ignores_legacy_flag_in_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-29 (argv는 더 이상 판정 근거가 아니다)
+    monkeypatch.delenv(_helper_const("HELPER_ENV"), raising=False)
+    monkeypatch.setattr(gui_mod.sys, "argv", ["app", "--__cookie-login", "/tmp/cookies.json"])
+    monkeypatch.setattr(
+        gui_mod, "run_helper", lambda *_a, **_kw: pytest.fail("argv로 헬퍼에 진입하면 안 된다")
+    )
+    run_calls: list[object] = []
+    monkeypatch.setattr(gui_mod.ft, "run", lambda view, *_a, **_kw: run_calls.append(view))
+
+    gui_mod.main()
+
+    assert run_calls == [gui_mod._view]
+
+
+# -- 경로 정책(W-5): 로그·출력 폴더 -----------------------------------------------------
+# Velopack 설치본은 바로가기로 실행돼 cwd가 보장되지 않고, 업데이트가 설치 폴더를 통째로
+# 교체한다. 로그는 앱 데이터 아래 절대 경로로, 출력 폴더 기본값은 사용자 폴더로 간다(D-12).
+
+
+def _options_gui(out_value: str) -> CrawlerGUI:
+    """``_read_options()``가 읽는 입력 컨트롤만 대역으로 갖춘 인스턴스."""
+    gui = object.__new__(CrawlerGUI)
+    gui.delay_field = SimpleNamespace(value="1.0")  # type: ignore[assignment]
+    gui.retries_field = SimpleNamespace(value="3")  # type: ignore[assignment]
+    gui.menu_field = SimpleNamespace(value="")  # type: ignore[assignment]
+    gui.out_field = SimpleNamespace(value=out_value)  # type: ignore[assignment]
+    gui.force_cb = SimpleNamespace(value=False)  # type: ignore[assignment]
+    gui.cookie_field = SimpleNamespace(value="")  # type: ignore[assignment]
+    gui.loglevel_dd = SimpleNamespace(value="INFO")  # type: ignore[assignment]
+    return gui
+
+
+def test_log_dir_is_absolute_under_app_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-26
+    storage = tmp_path / "storage"
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(storage))
+
+    log_dir = _options_gui(str(tmp_path / "out"))._read_options()["log_dir"]
+
+    assert isinstance(log_dir, Path)
+    assert log_dir != Path("logs"), "cwd 상대 'logs' 하드코딩은 설치본에서 업데이트마다 소실된다"
+    assert log_dir.is_absolute()
+    assert log_dir == app_data_dir() / "logs"
+
+
+def test_log_dir_does_not_follow_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-26 (cwd를 옮겨도 같은 절대 경로여야 한다)
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path / "storage"))
+    first = _options_gui(str(tmp_path / "out"))._read_options()["log_dir"]
+    assert isinstance(first, Path)
+    # 상대 경로면 이 시점(현재 cwd)의 해석과 chdir 이후의 해석이 달라진다.
+    first_resolved = first.resolve()
+
+    workdir = tmp_path / "elsewhere"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    second = _options_gui(str(tmp_path / "out"))._read_options()["log_dir"]
+    assert isinstance(second, Path)
+
+    assert first == second
+    assert first_resolved == second.resolve(), (
+        "cwd가 바뀌면 가리키는 곳이 달라지는 상대 경로다 — 설치본에서 로그가 흩어진다"
+    )
+
+
+def test_default_output_dir_is_absolute_user_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-27
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path / "storage"))
+
+    default = gui_mod._default_output_dir()
+
+    assert default != "output", "cwd 상대 기본값은 설치본에서 current\\output에 쌓인다"
+    assert Path(default).is_absolute()
+    # 사용자 폴더 기반이어야 한다(앱 데이터/설치 폴더 안이 아님).
+    assert Path(default).is_relative_to(Path.home())
+
+
+def test_gui_settings_live_under_app_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-27 (영속 위치가 앱 데이터 아래여야 업데이트로 교체돼도 살아남는다)
+    storage = tmp_path / "storage"
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(storage))
+
+    assert gui_mod._gui_settings_path().parent == app_data_dir()
+
+    gui_mod._save_gui_settings({"output_dir": str(tmp_path / "backup")})
+
+    assert gui_mod._gui_settings_path().is_file()
+    assert gui_mod._load_gui_settings()["output_dir"] == str(tmp_path / "backup")
+
+
+class _FakeDirectoryPicker:
+    """``ft.FilePicker`` 대역 — 폴더 선택 대화상자가 고른 경로를 그대로 돌려준다."""
+
+    def __init__(self, path: str | None) -> None:
+        self._path = path
+
+    async def get_directory_path(self, **_kwargs: object) -> str | None:
+        return self._path
+
+
+def test_output_dir_defaults_then_persists_across_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-27
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path / "storage"))
+
+    # 한 번도 고른 적이 없으면 사용자 폴더 기반 절대 경로가 기본값이다.
+    first = _bare_gui_with_build()
+    assert first.out_field.value == gui_mod._default_output_dir()
+
+    # 사용자가 폴더를 고른다. out_field는 실제 페이지에 붙지 않은 컨트롤이라
+    # update() 호출이 예외를 던지므로 대역으로 바꾼다.
+    picked = str(tmp_path / "내 백업")
+    first.out_field = SimpleNamespace(value="", update=lambda: None)  # type: ignore[assignment]
+    first.file_picker = _FakeDirectoryPicker(picked)  # type: ignore[assignment]
+    asyncio.run(first._pick_folder(None))  # type: ignore[arg-type]
+
+    assert first.out_field.value == picked
+
+    # 앱을 다시 연다 — 직전 선택이 복원돼야 한다.
+    second = _bare_gui_with_build()
+    assert second.out_field.value == picked

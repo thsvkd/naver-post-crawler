@@ -4,22 +4,34 @@ version = "0.1.0"
 description = "네이버 블로그·카페의 글을 과거→최근 순으로 txt 파일로 백업하는 크롤러"
 readme = "README.md"
 authors = [{ name = "thsvkd", email = "thsxogud1123@gmail.com" }]
-requires-python = ">=3.14"
+# flet build가 번들에 임베드하는 인터프리터는 CPython 3.12다(참조 산출물 tarball 실측).
+# 개발 환경을 배포 인터프리터에 맞춰야 "개발에서는 되는데 배포본이 import 단계에서 죽는"
+# 문법·API 차이를 개발 중에 잡을 수 있다. 하한을 올릴 때는 .python-version과
+# [tool.ruff] target-version, tests/test_python_compat.py의 _TARGET_PYTHON을 함께 올린다.
+requires-python = ">=3.12"
 dependencies = [
     "click>=8.4.0",
     # GUI(flet)는 이 앱의 일급 기능(run.py 무인자 = GUI)이므로 기본 의존성으로 둔다.
     # optional extra로 두면 uv가 명령마다 환경을 재동기화하며 flet을 설치/삭제 반복한다.
     # "flet>=0.85",
-    "flet-desktop>=0.85.1",
+    # flet build는 이 제약으로 번들용 flet을 따로 설치하므로 >=로 두면 최신을 끌어와
+    # flet-cli가 만든 UI 클라이언트(Flutter) 버전과 어긋난다. 그러면 앱은 뜨지만 화면이
+    # 그려지지 않는다(빈 창). dev 그룹의 flet-cli와 **정확히 같은 버전**으로 고정한다.
+    "flet-desktop==0.85.1",
     "httpx>=0.28.1",
     "rich>=15.0.0",
     "selectolax>=0.4.9",
     # 앱 내 웹뷰 네이버 로그인(cookie_login). pywebview로 네이티브 웹뷰를 별도
     # 프로세스에 띄워 HttpOnly 세션 쿠키를 수거한다. Windows 백엔드(WebView2)는
     # pythonnet으로 .NET 상호운용하므로 win32에서만 함께 설치한다(WebView2 런타임은
-    # Win11 기본 탑재). mac/Linux 백엔드(pyobjc/PyGObject)는 Phase 2에서 추가한다.
+    # Win11 기본 탑재). macOS 백엔드(Cocoa/WebKit)는 pywebview가 darwin 마커로
+    # pyobjc 계열을 직접 끌어오므로 여기에 따로 적지 않는다.
     "pywebview>=6.0",
     "pythonnet>=3.0 ; sys_platform == 'win32'",
+    # 설치/자동 업데이트(Velopack). abi3 네이티브 확장이라 flet이 임베드하는 파이썬
+    # 버전과 무관하게 번들에 들어간다. import만으로 0.5초 이상 걸리므로 앱 기동 경로에서
+    # 부르지 않는다(velopack_update가 함수 안에서 지연 임포트한다).
+    "velopack>=1.2.0",
 ]
 
 [project.scripts]
@@ -31,15 +43,16 @@ requires = ["uv_build>=0.9.27,<0.10.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-# flet-cli는 `flet pack`(scripts/build.py의 유일한 빌드 경로) 실행에 쓰는 `flet` CLI를
+# flet-cli는 `flet build`(scripts/build.py의 유일한 빌드 경로) 실행에 쓰는 `flet` CLI를
 # 제공한다. 선언하지 않으면 `uv sync`가 매번 "불필요"로 보고 제거하고, 직후 빌드가
 # 다시 설치해 설치/삭제가 반복된다. dev 그룹에 두면 sync가 보존해 이 churn을 없앤다.
-# pyinstaller는 `flet pack`이 내부에서 `import PyInstaller`를 하므로 없으면 빌드가 실패한다.
-dev = ["pytest>=9.0.3", "ruff>=0.15.13", "flet-cli>=0.85.1", "pyinstaller>=6.0"]
+# flet-cli는 UI 클라이언트(Flutter) 버전을 결정하므로 번들되는 flet-desktop과 반드시
+# 같은 버전이어야 한다(불일치 시 빈 창).
+dev = ["pytest>=9.0.3", "ruff>=0.15.13", "flet-cli==0.85.1"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

@@ -7,16 +7,25 @@ HttpOnly 포함)를 읽어 부모(GUI)로 돌려준다. ``NID_AUT``는 HttpOnly�
 
 Flet(serious_python)은 CPython을 Flutter와 한 프로세스에 내장해 진짜 메인 스레드를
 Flutter가 점유한다. pywebview는 메인 스레드를 요구하므로 인프로세스로 띄울 수 없어
-**별도 프로세스**로 실행한다. 부모는 앱을 헬퍼 모드(:data:`HELPER_FLAG`)로 재실행하고,
-헬퍼는 결과 JSON을 인자로 받은 파일 경로에 쓴다::
+**별도 프로세스**로 실행한다. 부모는 앱을 헬퍼 모드로 재실행하고, 헬퍼는 결과 JSON을
+지정된 파일 경로에 쓴다::
 
     {"status": "captured|timeout|error", "cookies": [{"name","value","domain"}, ...]}
+
+.. important::
+    헬퍼 모드와 결과 경로는 **환경변수로만** 전달한다(:data:`HELPER_ENV`,
+    :data:`HELPER_RESULT_ENV`). 명령행 인자를 쓰면 안 된다 — ``flet build``가 만드는
+    Flutter 러너의 Dart 진입점은 **인자가 하나라도 있으면 "개발자 모드"** 로 판정해 그
+    인자를 페이지 URL로 해석하고 파이썬을 아예 실행하지 않는다. 즉 배포본에서 앱을 인자와
+    함께 재실행하면 로그인 창 대신 빈 창이 뜨고 헬퍼는 영영 결과를 쓰지 못한다.
+    같은 이유로 헬퍼 진입 판정(:func:`is_helper_mode`)도 ``sys.argv``를 보지 않는다.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -26,8 +35,12 @@ from pathlib import Path
 
 from .cookie import format_cookie_header
 
-# 부모가 헬퍼 모드로 재실행할 때 넘기는 플래그. gui.main()이 이 플래그를 보고 분기한다.
-HELPER_FLAG = "--__cookie-login"
+# 부모가 헬퍼 모드로 재실행할 때 세우는 환경변수와 그 값. gui.main()이 이걸 보고 분기한다.
+# argv를 쓰지 않는 이유는 모듈 docstring 참고.
+HELPER_ENV = "NAVER_POST_CRAWLER_MODE"
+HELPER_MODE = "cookie-login-helper"
+# 헬퍼가 결과 JSON을 써야 할 파일 경로를 넘기는 환경변수.
+HELPER_RESULT_ENV = "NAVER_POST_CRAWLER_COOKIE_RESULT"
 
 # 네이버 로그인 페이지. 로그인 성공 후 naver.com으로 리다이렉트된다.
 _LOGIN_URL = "https://nid.naver.com/nidlogin.login"
@@ -66,7 +79,7 @@ def parse_helper_output(returncode: int, stdout: str) -> str | None:
         return None
     try:
         data = json.loads(stdout)
-    except json.JSONDecodeError, TypeError, ValueError:
+    except (json.JSONDecodeError, TypeError, ValueError):
         return None
     if not isinstance(data, dict) or data.get("status") != "captured":
         return None
@@ -81,13 +94,41 @@ def parse_helper_output(returncode: int, stdout: str) -> str | None:
     return format_cookie_header(triples) or None
 
 
-def _helper_command(result_path: Path) -> list[str]:
-    """헬퍼 서브프로세스 실행 커맨드. frozen(flet pack) 여부로 분기한다."""
-    if getattr(sys, "frozen", False):
-        # flet pack: 앱 실행 파일 자신을 헬퍼 모드로 재실행한다.
-        return [sys.executable, HELPER_FLAG, str(result_path)]
+def _is_bundled() -> bool:
+    """``flet build`` 배포본에서 도는지 판정한다.
+
+    러너가 프로덕션 실행에서 세우는 ``FLET_APP_STORAGE_DATA``를 신호로 쓴다.
+    ``sys.frozen``은 PyInstaller가 세우는 값이라 ``flet build`` 번들에서는 서지 않는다 —
+    그걸 근거로 쓰면 배포본이 개발용 분기(``python -m ...``)를 타고 실패한다.
+    """
+    return bool(os.environ.get("FLET_APP_STORAGE_DATA"))
+
+
+def _helper_command() -> list[str]:
+    """헬퍼 서브프로세스 실행 커맨드.
+
+    **인자를 붙이지 않는다.** 헬퍼 모드와 결과 경로는 :func:`helper_env`가 만드는
+    환경변수로 넘어간다(이유는 모듈 docstring 참고).
+    """
+    if _is_bundled():
+        # 배포본: 앱 실행 파일 자신을 인자 없이 재실행한다.
+        return [sys.executable]
     # 개발 실행: 패키지를 모듈로 실행한다(python -m naver_post_crawler).
-    return [sys.executable, "-m", "naver_post_crawler", HELPER_FLAG, str(result_path)]
+    return [sys.executable, "-m", "naver_post_crawler"]
+
+
+def helper_env(result_path: Path) -> dict[str, str]:
+    """헬퍼에 넘길 환경변수 사전.
+
+    현재 환경을 그대로 상속한 뒤 헬퍼 모드 표시와 결과 파일 경로를 얹는다. 상속하지 않으면
+    ``PATH``·프록시·디스플레이 설정이 사라져 헬퍼가 아예 뜨지 못한다.
+    """
+    return {**os.environ, HELPER_ENV: HELPER_MODE, HELPER_RESULT_ENV: str(result_path)}
+
+
+def is_helper_mode() -> bool:
+    """이 프로세스가 헬퍼 모드로 기동됐는지. 판정 근거는 환경변수뿐이다(``sys.argv`` 아님)."""
+    return os.environ.get(HELPER_ENV) == HELPER_MODE
 
 
 def login_and_capture(runner: Callable[..., object] = subprocess.run) -> str | None:
@@ -102,10 +143,11 @@ def login_and_capture(runner: Callable[..., object] = subprocess.run) -> str | N
             # 헬퍼가 스스로 끝내지 못해도(교착 등) 부모가 무한 대기하지 않게 상한을 둔다.
             # 헬퍼 자체 타임아웃보다 넉넉히 크게 잡고, 초과 시 subprocess.run이 자식을 종료한다.
             proc = runner(
-                _helper_command(result_path),
+                _helper_command(),
                 capture_output=True,
                 text=True,
                 timeout=_LOGIN_TIMEOUT_S + 30,
+                env=helper_env(result_path),
             )
         except subprocess.TimeoutExpired:
             return None
@@ -125,10 +167,8 @@ def run_helper(result_path: str | None = None) -> int:
     import webview  # 지연 임포트: 헬퍼 모드에서만 필요하다.
 
     if result_path is None:
-        try:
-            result_path = sys.argv[sys.argv.index(HELPER_FLAG) + 1]
-        except ValueError, IndexError:
-            result_path = "cookies.json"
+        # 부모가 환경변수로 넘긴다(argv를 쓰면 배포본에서 파이썬이 아예 안 뜬다).
+        result_path = os.environ.get(HELPER_RESULT_ENV) or "cookies.json"
     out_path = Path(result_path)
 
     done = threading.Event()
