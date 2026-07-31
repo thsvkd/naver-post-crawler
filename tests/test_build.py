@@ -158,7 +158,11 @@ def test_vpk_pack_args_omit_signing_when_unset(tmp_path: Path, monkeypatch) -> N
     mac = build.vpk_pack_args("macos", bundle_dir=_app_bundle(tmp_path), version="0.2.0")
 
     assert "--signParams" not in win
-    assert "--signAppIdentity" not in mac
+    # macOS는 ad-hoc 재봉인만 붙는다(Apple Silicon 최소 요건). 실제 인증서로 서명하거나
+    # 공증하는 인자는 환경변수를 채우기 전까지 붙지 않는다.
+    assert _flag_value(mac, "--signAppIdentity") == "-"
+    assert "--signInstallIdentity" not in mac
+    assert "--notaryProfile" not in mac
 
 
 # -- 번들 정리: 바깥을 가리키는 심볼릭 링크 --------------------------------------------
@@ -195,6 +199,54 @@ def test_prune_bundle_is_noop_for_clean_bundle(tmp_path: Path) -> None:
     bundle = _app_bundle(tmp_path)
 
     assert build.prune_bundle(bundle) == []
+
+
+def test_resign_adhoc_reseals_the_whole_bundle(tmp_path: Path) -> None:
+    # covers: Test-12
+    # 지운 .pod는 프레임워크의 _CodeSignature/CodeResources에 **봉인된 리소스**로 들어 있다.
+    # 지우기만 하면 "a sealed resource is missing or invalid"가 되므로 다시 봉인해야 한다.
+    bundle = _app_bundle(tmp_path)
+    calls: list[list[str]] = []
+
+    build.resign_adhoc(bundle, runner=lambda cmd, **_kw: calls.append(cmd) or 0)
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[0] == "codesign"
+    assert "--force" in cmd and "--deep" in cmd
+    assert cmd[cmd.index("--sign") + 1] == "-", "ad-hoc 서명은 식별자가 '-'다"
+    assert str(bundle) in cmd
+
+
+def test_resign_adhoc_fails_loudly(tmp_path: Path) -> None:
+    # covers: Test-12 (재서명 실패를 삼키면 깨진 서명이 그대로 배포된다)
+    bundle = _app_bundle(tmp_path)
+
+    with pytest.raises(SystemExit):
+        build.resign_adhoc(bundle, runner=lambda _cmd, **_kw: 1)
+
+
+def test_vpk_pack_args_macos_defaults_to_adhoc_identity(tmp_path: Path, monkeypatch) -> None:
+    # covers: Test-15
+    # 실측: vpk가 UpdateMac과 sq.version을 Contents/MacOS에 끼워 넣으면서 앱 봉인이 다시
+    # 깨진다. 우리가 먼저 재서명해도 소용없으므로, vpk 자신이 마지막에 다시 봉인하게 한다.
+    # 이건 Developer ID 서명이 아니라 Apple Silicon이 요구하는 최소 조건이다.
+    for name in ("NPC_SIGN_APP_IDENTITY", "NPC_SIGN_INSTALL_IDENTITY", "NPC_SIGN_NOTARY_PROFILE"):
+        monkeypatch.delenv(name, raising=False)
+
+    args = build.vpk_pack_args("macos", bundle_dir=_app_bundle(tmp_path), version="0.2.0")
+
+    assert _flag_value(args, "--signAppIdentity") == "-"
+
+
+def test_vpk_pack_args_macos_prefers_configured_identity(tmp_path: Path, monkeypatch) -> None:
+    # covers: Test-15 (환경변수를 채우면 그 값이 ad-hoc 기본값을 이긴다)
+    monkeypatch.setenv("NPC_SIGN_APP_IDENTITY", "Developer ID Application: thsvkd")
+
+    args = build.vpk_pack_args("macos", bundle_dir=_app_bundle(tmp_path), version="0.2.0")
+
+    assert _flag_value(args, "--signAppIdentity") == "Developer ID Application: thsvkd"
+    assert args.count("--signAppIdentity") == 1, "ad-hoc 기본값과 중복되면 안 된다"
 
 
 def _flag_value(args: list[str], flag: str) -> str:

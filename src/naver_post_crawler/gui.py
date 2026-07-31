@@ -441,7 +441,21 @@ class CrawlerGUI:
         self.page.run_thread(self._download_and_apply)
 
     def _check_updates(self, manual: bool) -> None:
-        """새 릴리스를 확인해 버튼·상태를 갱신한다(백그라운드 스레드에서 호출)."""
+        """새 릴리스를 확인해 버튼·상태를 갱신한다(백그라운드 스레드에서 호출).
+
+        설치본이 아니면 확인 자체를 하지 않는다. Velopack의 ``UpdateManager``는 생성 시점에
+        설치 컨텍스트를 요구해서, 개발 실행에서는 ``RuntimeError("This application is not
+        properly installed")``로 죽는다 — 그걸 "업데이트 확인 실패"로 보여 주면 사용자에게는
+        고장으로 보인다(실측 확인).
+        """
+        if not velopack_update.is_installed():
+            if manual:
+                self._set_update_status(
+                    f"설치본이 아닙니다 (개발 실행, v{__version__}). "
+                    "자동 업데이트는 설치 프로그램으로 설치한 앱에서 동작합니다.",
+                    self._muted_color,
+                )
+            return
         try:
             info = velopack_update.check()
         except Exception as exc:

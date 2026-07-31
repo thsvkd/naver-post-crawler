@@ -25,7 +25,7 @@ def _update_gui() -> CrawlerGUI:
     gui.update_btn = SimpleNamespace(content="업데이트 확인", icon=None, disabled=False, page=None)  # type: ignore[assignment]
     gui.update_status = SimpleNamespace(value="", color=None, page=None)  # type: ignore[assignment]
     gui._muted_color = None  # type: ignore[assignment]
-    gui._pending_release = None  # type: ignore[assignment]
+    gui._pending_update = None  # type: ignore[assignment]
     gui._applying = False  # type: ignore[assignment]
     gui._set_update_status = lambda msg, color=None: None  # type: ignore[method-assign]
     return gui
@@ -52,6 +52,7 @@ def test_startup_worker_runs_maintenance_before_check(monkeypatch: pytest.Monkey
 def test_new_version_updates_button_content(monkeypatch: pytest.MonkeyPatch) -> None:
     # covers: Test-21
     info = object()
+    monkeypatch.setattr(gui_mod.velopack_update, "is_installed", lambda: True)
     monkeypatch.setattr(gui_mod.velopack_update, "check", lambda: info)
     monkeypatch.setattr(gui_mod.velopack_update, "target_version", lambda _i: "0.2.0")
     gui = _update_gui()
@@ -117,3 +118,38 @@ def test_reclick_while_applying_starts_no_worker() -> None:
     gui._on_update_click()
 
     assert started == []
+
+
+def test_dev_run_does_not_attempt_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-23
+    # 실측 버그: 개발 실행(uv run python scripts/run.py)에서 velopack UpdateManager 생성이
+    # RuntimeError("This application is not properly installed")로 죽어 화면에
+    # "업데이트 확인 실패 + 트레이스백"이 떴다. 설치본이 아니면 확인 자체를 하지 않는다.
+    messages: list[str] = []
+    monkeypatch.setattr(gui_mod.velopack_update, "is_installed", lambda: False)
+
+    def boom():
+        raise RuntimeError("This application is not properly installed")
+
+    monkeypatch.setattr(gui_mod.velopack_update, "check", boom)
+    gui = _update_gui()
+    gui._set_update_status = lambda msg, color=None: messages.append(msg)  # type: ignore[method-assign]
+
+    gui._check_updates(manual=True)
+
+    assert gui._pending_update is None
+    assert messages, "왜 확인하지 않는지 알려야 한다"
+    assert not any("실패" in m for m in messages), f"실패로 보이면 안 된다: {messages}"
+
+
+def test_installed_run_still_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-23 (가드가 설치본까지 막아버리면 자동 업데이트가 죽는다)
+    monkeypatch.setattr(gui_mod.velopack_update, "is_installed", lambda: True)
+    monkeypatch.setattr(gui_mod.velopack_update, "check", lambda: None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        gui_mod.velopack_update, "target_version", lambda _i: calls.append("v") or "0.2.0"
+    )
+    gui = _update_gui()
+
+    gui._check_updates(manual=True)  # 예외 없이 "최신" 경로로 끝나야 한다

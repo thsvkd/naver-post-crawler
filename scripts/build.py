@@ -216,6 +216,22 @@ def prune_bundle(app_bundle: Path) -> list[Path]:
     return removed
 
 
+def resign_adhoc(app_bundle: Path, *, runner=run) -> None:
+    """번들 전체를 ad-hoc으로 다시 서명한다(:func:`prune_bundle` 직후에 부른다).
+
+    지운 ``.pod``는 프레임워크의 ``_CodeSignature/CodeResources``에 **봉인된 리소스**로
+    등재되어 있다(실측: 심볼릭 링크 대상까지 기록되어 있다). 그래서 파일만 지우면 번들이
+    ``a sealed resource is missing or invalid`` 상태가 된다. Apple Silicon은 실행되는 모든
+    Mach-O에 최소 ad-hoc 서명을 요구하므로 깨진 봉인을 그대로 배포할 수 없다.
+
+    Developer ID 서명이 아니라 재봉인이다 — 공증되지 않는다는 사실은 그대로다.
+    """
+    info("번들 ad-hoc 재서명(제거한 링크 때문에 깨진 봉인 복구)")
+    code = runner(["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)], cwd=REPO_ROOT)
+    if code != 0:
+        fail(f"ad-hoc 재서명 실패(exit {code}): {app_bundle}")
+
+
 def velopack_output_dir() -> Path:
     """Velopack 산출물 폴더(릴리스에 올릴 파일들이 모이는 곳)."""
     return REPO_ROOT / "dist" / "velopack"
@@ -257,7 +273,13 @@ def vpk_pack_args(target: str, *, bundle_dir: Path, version: str) -> list[str]:
         args += ["--mainExe", macos_main_exe(bundle_dir)]
         # 설치기(.pkg)만 배포한다(D-2). Portable.zip은 올리지 않으므로 만들지도 않는다.
         args.append("--noPortable")
-        args += sign.velopack_sign_args_macos()
+        macos_sign = sign.velopack_sign_args_macos()
+        if "--signAppIdentity" not in macos_sign:
+            # vpk는 UpdateMac과 sq.version을 Contents/MacOS에 끼워 넣으므로, 우리가 먼저
+            # 재서명해도 그 시점에 앱 봉인이 다시 깨진다. vpk 자신이 마지막에 다시 봉인하게
+            # ad-hoc 식별자를 넘긴다(실측: 안 넘기면 설치본이 sealed resource 오류 상태다).
+            macos_sign = ["--signAppIdentity", "-", *macos_sign]
+        args += macos_sign
     return args
 
 
@@ -395,6 +417,7 @@ def main() -> int:
         pruned = prune_bundle(pack_dir)
         if pruned:
             info(f"번들 밖을 가리키는 심볼릭 링크 {len(pruned)}개 제거: {pruned[0].name} …")
+            resign_adhoc(pack_dir)
     out = velopack_pack(bundle_dir=pack_dir, version=version, target=target, vpk=find_vpk())
     info(f"Velopack 산출물: {out}")
     info(f"릴리스 업로드는 'python scripts/deploy.py'로 진행하세요 (태그 v{version}).")
