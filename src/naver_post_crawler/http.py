@@ -46,7 +46,9 @@ def get_with_retry(
         FetchError: 재시도 이후에도 요청이 실패한 경우.
     """
     last_exc: Exception | None = None
+    attempts = 0
     for attempt in range(max_retries):
+        attempts += 1
         if delay:
             time.sleep(delay)
         try:
@@ -78,5 +80,7 @@ def get_with_retry(
     url = str(client.build_request("GET", path, params=params).url)
     # 어떤 요청이 최종 실패했는지만 남긴다. 트레이스백은 상위(crawler)에서
     # exc_info로 한 번만 기록하고, 원인은 __cause__로 연결해 넘긴다.
-    logger.error("요청 최종 실패(%d회): %s", max_retries, url)
-    raise FetchError(url, attempts=max_retries, cause=last_exc) from last_exc
+    # 시도 횟수는 max_retries가 아니라 '실제로 보낸 횟수'다. 재시도 없이 중단한
+    # 4xx를 3회 시도한 것처럼 보고하면 원인 추적을 오도한다.
+    logger.error("요청 최종 실패(%d회): %s", attempts, url)
+    raise FetchError(url, attempts=attempts, cause=last_exc) from last_exc
