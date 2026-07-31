@@ -213,3 +213,30 @@ CLI와 동일한 코어(`Crawler` 제너레이터, `FailureStore`, `resolve_blog
 - 카페 내부 API 사용, 비공개/등급 제한 영역의 자동 수집은 이용약관 위반 소지가 있고,
   robots.txt 위반이 문제된 판례가 있다. 요청 속도 제한·봇 차단 대상이 될 수 있다.
   **본인이 가입한 카페의 접근 가능한 글**의 개인 백업만 전제한다.
+
+## 10. 배포 · 설치 · 자체 업데이트
+
+- **빌드**: `scripts/build.py` → `flet build <target>`로 네이티브 앱을 만들고 Velopack(`vpk pack`)으로
+  설치기/업데이트 패키지를 만든다. 산출물은 `dist/velopack/`이며 Windows는 `*-Setup.exe`,
+  macOS는 `*-Setup.pkg`와 각각의 `*.nupkg`·`releases.<채널>.json`이다.
+  **빌드 머신은 타깃 OS와 같아야 한다**(`flet build`·`vpk` 양쪽 제약).
+- **채널**: Windows는 `win`, macOS는 `osx`. 채널이 피드 파일 이름을 정하므로 두 플랫폼 산출물을
+  같은 릴리스 태그에 함께 올려도 파일명이 겹치지 않는다. 앱의 `GithubSource`는 최근 릴리스들을
+  훑어 자기 채널 피드만 읽으므로 태그를 나누면 그 조회 창을 두 배로 쓴다.
+- **배포**: `scripts/deploy.py` → 버전 게이트(`pyproject.toml`의 `[project].version`이 SSoT,
+  이전 릴리스와 같으면 중단) → 빌드 → `vpk upload github --merge --tag v<version>`.
+  릴리스 노트는 사람이 작성하며, 이미 같은 태그의 릴리스가 있으면(두 번째 플랫폼) 노트를 넘기지 않는다.
+- **자체 업데이트**: `src/naver_post_crawler/velopack_update.py`가 velopack 바인딩을 감싼다.
+  GUI가 시작 시 워커 스레드에서 `run_startup_maintenance()`(오래된 nupkg 정리)를 먼저 부르고
+  이어서 업데이트를 확인한다. velopack은 네이티브 모듈이라 import만으로 0.5초 이상 걸리므로
+  **반드시 함수 안에서 지연 임포트**하고 워커 스레드에서만 호출한다.
+- **설치/업데이트 라이프사이클 훅**(`--veloapp-*`)은 파이썬이 아니라 **네이티브 러너 진입점**에서
+  처리한다(`scripts/flet_template.py`가 Windows 러너 `main.cpp`를 패치한다). flet이 만드는 Flutter
+  러너는 명령행 인자가 하나라도 있으면 "개발자 모드"로 간주해 파이썬을 실행조차 하지 않기 때문이다.
+  같은 이유로 쿠키 로그인 헬퍼도 argv가 아니라 환경변수로 기동한다(`cookie_login`).
+- **서명**: 이번 범위에서는 하지 않는다(미서명 배포). `NPC_SIGN_*` 환경변수를 채우면
+  `scripts/sign.py`가 플랫폼별 인자를 만들어 붙인다. macOS 사용자는 Gatekeeper 경고를 수동으로
+  넘겨야 하며 README에 절차를 안내한다.
+- **앱 데이터 경로**: Velopack은 업데이트할 때 설치 폴더(Windows `current\`, macOS `.app` 번들)를
+  통째로 교체한다. 따라서 쿠키·설정·로그는 실행 파일 옆이 아니라 `cookie.app_data_dir()` 아래에
+  둔다. GUI 출력 폴더 기본값은 사용자 문서 폴더 아래이며 마지막 선택을 기억한다(CLI는 cwd 상대 유지).

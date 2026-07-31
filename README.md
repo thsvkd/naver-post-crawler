@@ -4,7 +4,7 @@
 글 1개당 파일 1개로 제목·작성일·본문을 저장하며, 이미지·링크·인용구는 표기로 남겨 원문의 순서와 맥락을 보존합니다.
 헤드리스 브라우저 없이 HTTP 요청과 HTML 파싱만으로 동작하도록 설계되었습니다.
 
-**[최신 릴리스 다운로드](https://github.com/thsvkd/naver-blog-crawler/releases/latest)** · [작동 방식](#작동-방식) · [자주 묻는 질문](#자주-묻는-질문)
+**[최신 릴리스 다운로드](https://github.com/thsvkd/naver-post-crawler/releases/latest)** · [작동 방식](#작동-방식) · [자주 묻는 질문](#자주-묻는-질문)
 
 <!-- TODO: 앱 스크린샷 추가 → docs/screenshot.png 로 저장 후 아래 주석 해제 -->
 <!-- ![스크린샷](docs/screenshot.png) -->
@@ -20,8 +20,8 @@
 - **중단 안전** — 임시 파일에 기록한 뒤 원자적으로 교체하므로, 중단되어도 손상된 파일이 남지 않습니다.
 - **실패 자동 재시도** — 본문을 확보하지 못한 글을 자동으로 재시도하고, 끝내 실패하면 기록하여 다음 실행 시 재시도합니다.
 - **콘텐츠 충실도** — 이미지·링크 카드·인용구·동영상·구분선을 표기로 보존하여 순서와 맥락을 유지합니다.
-- **설치 불필요** — 압축 해제 후 즉시 실행하는 Windows 데스크톱 앱으로, 별도의 개발 환경이 필요하지 않습니다.
-- **자동 업데이트** — 새 버전 출시 시 앱 내에서 갱신할 수 있습니다.
+- **간편 설치** — Windows·macOS 설치 프로그램으로 바로 쓰는 데스크톱 앱이며, 별도의 개발 환경이 필요하지 않습니다.
+- **자동 업데이트** — 새 버전이 나오면 앱 안에서 바뀐 부분만 내려받아 갱신합니다.
 
 ---
 
@@ -31,22 +31,27 @@
 > 현재 **Windows** 실행 파일을 제공합니다. macOS·Linux는 아래 [개발 환경](#개발-환경)의
 > 소스 빌드를 참고하십시오.
 
-### 1. 다운로드
+### 1. 설치
 
-[최신 릴리스](https://github.com/thsvkd/naver-blog-crawler/releases/latest)에서 **`naver-post-crawler-windows.zip`**을 내려받습니다.
+[최신 릴리스](https://github.com/thsvkd/naver-post-crawler/releases/latest)에서 사용하는 OS의 설치 프로그램을 내려받습니다.
 
-> [!NOTE]
-> 게시된 릴리스가 아직 없다면 최초 배포를 준비 중인 상태입니다. 그동안에는 아래 [개발 환경](#개발-환경)의
-> 소스 빌드로 직접 실행하거나 실행 파일을 생성할 수 있습니다.
+- **Windows**: `*-Setup.exe`
+- **macOS**: `*-Setup.pkg`
 
-### 2. 압축 해제 후 실행
+설치하면 이후 새 버전은 앱 안에서 자동으로 받습니다(전체가 아니라 바뀐 부분만 내려받습니다).
 
-1. 내려받은 `.zip`을 압축 해제합니다.
-2. 폴더 안의 `naver-post-crawler.exe`를 실행합니다.
+> **v0.1.x 포터블 zip을 쓰고 계셨다면** 자동으로 넘어가지 않습니다. 위 설치 프로그램으로 한 번 설치해 주세요.
+> 저장된 로그인 쿠키는 이전되지 않으므로 설치 후 **네이버 로그인**을 다시 한 번 해 주시면 됩니다.
+> 이미 받아 둔 백업 파일은 그대로 두고 같은 출력 폴더를 다시 지정하면 이어받기가 계속 동작합니다.
 
-> [!IMPORTANT]
-> 최초 실행 시 *"Windows의 PC 보호"* 창이 표시되면 **추가 정보 → 실행**을 선택하십시오.
-> 코드 서명이 없는 개인 배포본에서 발생하는 정상적인 경고입니다.
+### 2. 앱 열기
+
+Windows는 시작 메뉴에서, macOS는 런치패드나 응용 프로그램 폴더에서 실행합니다.
+
+> **macOS에서 "확인되지 않은 개발자" 경고가 뜹니다.**
+> 이 앱은 Apple 개발자 인증서로 서명·공증되어 있지 않습니다(유료 프로그램이 필요합니다).
+> 설치 프로그램을 열 때 경고가 뜨면 **시스템 설정 → 개인정보 보호 및 보안**으로 가서
+> 화면 아래쪽의 **"확인 없이 열기"**를 누르면 설치가 진행됩니다.
 
 ### 3. 카페 로그인 쿠키 준비 (선택)
 
@@ -99,10 +104,10 @@
 > 로그 파일에는 기록하지 않습니다. 쿠키를 등록하지 않으면 공개 게시판만 수집할 수 있으며, 세션이 만료되면
 > **네이버 로그인**을 다시 수행하거나 쿠키 파일을 새로 등록하십시오.
 
-### 4. 실행
+### 4. 백업 실행
 
 1. **주소 칸**에 블로그 아이디·URL 또는 카페 주소를 입력합니다(예: `myblog`, `https://cafe.naver.com/mycafe`).
-2. **출력 폴더**를 지정합니다. 결과물 txt 파일이 이 폴더에 저장됩니다(기본값 `output`).
+2. **출력 폴더**를 지정합니다. 결과물 txt 파일이 이 폴더에 저장됩니다(기본값은 문서 폴더 아래 `naver-post-crawler`이며, 한 번 고르면 다음 실행에서 그대로 복원됩니다).
 3. **시작**을 누릅니다. 진행 중 **중단**할 수 있으며, 중단 시점까지 수집된 글은 저장 폴더에 유지됩니다.
 4. 로그인이 필요한 카페 게시판이라면 **고급 옵션 → 네이버 로그인**(또는 쿠키 업데이트)으로 세션을 먼저 등록하십시오(3단계 참고).
 
@@ -245,7 +250,7 @@ output/
 
 <br>
 
-**요구사항**: Python 3.14+, [uv](https://docs.astral.sh/uv/)
+**요구사항**: Python 3.12+, [uv](https://docs.astral.sh/uv/)
 
 **설치**
 
@@ -301,23 +306,36 @@ uv run naver-post-crawler https://cafe.naver.com/mycafe --cookie-file "cafe_cook
 
 쿠키 출처 우선순위는 `--cookie`(문자열) → `--cookie-file`(파일) → GUI에서 저장한 쿠키 순입니다.
 
-**빌드 (단일 실행파일)**
+**빌드 (설치기)**
 
-실행 OS를 감지하여 `flet pack`(PyInstaller)으로 단일 실행파일을 만듭니다(Windows/macOS/Linux 공통). Flutter/네이티브 툴체인은 필요 없습니다.
+실행 OS를 감지하여 `flet build`로 네이티브 앱을 만들고, 그것을 Velopack 설치기/업데이트 패키지로 포장합니다.
 
 ```bash
 python scripts/build.py
 ```
 
-- 결과물: `dist/naver-post-crawler.exe`(단일 실행파일)와 `dist/naver-post-crawler-windows.zip`(GitHub Releases에 업로드되어 앱의 자동 업데이트가 사용하는 릴리스 에셋). zip을 풀면 `naver-post-crawler/naver-post-crawler.exe` 구조가 됩니다.
-- 앱 데이터는 실행 파일 옆 `storage/`에 저장됩니다(포터블 동작).
+- 결과물: `dist/naver-post-crawler-<target>/`(앱 번들)과 `dist/velopack/`(Windows는 `*-Setup.exe`·`*.nupkg`·`releases.win.json`, macOS는 `*-Setup.pkg`·`*.nupkg`·`releases.osx.json`).
+- 사전 준비: Velopack CLI(`dotnet tool install -g vpk`), Windows는 Visual Studio "Desktop development with C++", macOS는 Xcode 명령행 도구. Flutter SDK는 `flet build`가 받아 옵니다.
+- **빌드 머신은 타깃 OS와 같아야 합니다.** Windows 설치기는 Windows에서, macOS 설치기는 macOS에서만 만들 수 있습니다.
+- 코드 서명은 기본적으로 하지 않습니다. `NPC_SIGN_*` 환경변수를 채우면 서명 인자가 붙습니다(`scripts/sign.py` 참고).
+
+**배포**
+
+```bash
+python scripts/deploy.py --dry-run   # 올릴 에셋 목록만 확인
+python scripts/deploy.py             # 빌드 + GitHub 릴리스 업로드
+```
+
+- `pyproject.toml`의 `[project].version`이 버전 SSoT입니다. 먼저 올려 두지 않으면 배포가 중단됩니다.
+- 릴리스 노트는 사람이 작성해 `dist/velopack/RELEASE_NOTES.md`에 두거나 `--notes`로 지정합니다.
+- 두 플랫폼 산출물은 **같은 태그 하나**에 올립니다. 두 번째 플랫폼에서 실행하면 에셋만 합류하고 릴리스 노트는 건드리지 않습니다.
 
 **테스트**
 
 ```bash
-uv run pytest                    # 테스트
-uv run ruff check src tests      # 린트
-uv run ruff format src tests     # 포맷
+uv run pytest                            # 테스트
+uv run ruff check src tests scripts      # 린트
+uv run ruff format src tests scripts     # 포맷
 ```
 
 **주요 문서**: 기능 명세 SSoT [docs/SPEC.md](docs/SPEC.md) · 개발 규약 [AGENTS.md](AGENTS.md)
