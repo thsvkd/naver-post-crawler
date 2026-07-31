@@ -304,7 +304,12 @@ def test_vpk_download_precedes_pack_with_matching_channel(
         return 0
 
     build.velopack_pack(
-        bundle_dir=bundle, version="0.2.0", target=target, vpk="vpk", runner=fake_runner
+        bundle_dir=bundle,
+        version="0.2.0",
+        target=target,
+        vpk="vpk",
+        out_dir=tmp_path / "out",
+        runner=fake_runner,
     )
 
     assert len(calls) >= 2, f"download와 pack이 모두 실행되어야 한다: {calls}"
@@ -324,7 +329,7 @@ def test_repo_url_comes_from_app_module() -> None:
     assert build.REPO_URL == velopack_update.REPO_URL
 
 
-def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path, monkeypatch) -> None:
+def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path) -> None:
     # covers: Test-13
     # 실측 버그: 같은 버전을 두 번 빌드하면 vpk가 "There is a release in channel osx which is
     # equal or greater to the current version"으로 거부한다. 이전 pack 산출물이 출력 폴더에
@@ -334,8 +339,6 @@ def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path, monkeypatch)
     out.mkdir()
     stale = out / "NaverPostCrawler-0.2.0-osx-full.nupkg"
     stale.write_text("이전 실행 잔재", encoding="utf-8")
-    monkeypatch.setattr(build, "velopack_output_dir", lambda: out)
-
     order: list[str] = []
 
     def fake_runner(cmd: list[str], **_kwargs: object) -> int:
@@ -350,6 +353,7 @@ def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path, monkeypatch)
         version="0.2.0",
         target="macos",
         vpk="vpk",
+        out_dir=out,
         runner=fake_runner,
     )
 
@@ -357,19 +361,18 @@ def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path, monkeypatch)
     assert not stale.exists()
 
 
-def test_velopack_pack_keeps_release_notes(tmp_path: Path, monkeypatch) -> None:
+def test_velopack_pack_keeps_release_notes(tmp_path: Path) -> None:
     # covers: Test-13 (사람이 쓴 릴리스 노트를 빌드가 지워버리면 안 된다)
     out = tmp_path / "velopack"
     out.mkdir()
     notes = out / "RELEASE_NOTES.md"
     notes.write_text("사람이 쓴 노트", encoding="utf-8")
-    monkeypatch.setattr(build, "velopack_output_dir", lambda: out)
-
     build.velopack_pack(
         bundle_dir=_app_bundle(tmp_path),
         version="0.2.0",
         target="macos",
         vpk="vpk",
+        out_dir=out,
         runner=lambda _cmd, **_kw: 0,
     )
 

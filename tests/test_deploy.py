@@ -84,39 +84,48 @@ def test_upload_assets_for_macos_channel(tmp_path: Path) -> None:
 
 def test_upload_command_passes_explicit_v_tag() -> None:
     # covers: Test-33
-    cmd = deploy.upload_command("vpk", version="0.2.0", channel="win", out_dir=Path("/tmp/o"))
+    cmd = deploy.upload_command(
+        "vpk", version="0.2.0", channel="win", out_dir=Path("/tmp/o"), token="tok"
+    )
 
     assert "--tag" in cmd
     assert cmd[cmd.index("--tag") + 1] == "v0.2.0", (
         "도구 기본 태그는 'v' 없는 버전이라 기존 v0.1.0 관행과 어긋난다"
     )
-    assert "--merge" in cmd, "두 플랫폼이 같은 릴리스에 합류해야 한다"
+    assert cmd[cmd.index("--merge") + 1] == "true", "두 플랫폼이 같은 릴리스에 합류해야 한다"
+    assert cmd[cmd.index("--token") + 1] == "tok", "vpk는 gh 자격증명을 알아서 쓰지 않는다"
+    # vpk upload github에는 릴리스 본문을 넣는 옵션이 없다(실측: --releaseName만 있다).
+    assert "--releaseNotes" not in cmd
 
 
 def test_upload_stays_draft_unless_publish_is_requested() -> None:
     # covers: Test-34 (두 플랫폼 릴리스는 한쪽만 올라간 상태로 공개되면 안 된다)
-    draft = deploy.upload_command("vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"))
+    draft = deploy.upload_command(
+        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), token="t"
+    )
     published = deploy.upload_command(
-        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), publish=True
+        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), token="t", publish=True
     )
 
     assert "--publish" not in draft, (
         "먼저 올라간 플랫폼만으로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 본다"
     )
-    assert "--publish" in published
+    assert published[published.index("--publish") + 1] == "true"
 
 
-def test_release_notes_are_generated_only_once(tmp_path: Path) -> None:
+def test_release_notes_are_applied_only_on_first_platform(tmp_path: Path) -> None:
     # covers: Test-34
     notes = tmp_path / "RELEASE_NOTES.md"
-    notes.write_text("첫 플랫폼이 만든 노트", encoding="utf-8")
+    notes.write_text("첫 플랫폼이 쓴 노트", encoding="utf-8")
 
-    # 이미 릴리스가 있으면(두 번째 플랫폼) 노트를 넘기지 않는다 — 덮어쓰기 방지.
-    assert deploy.notes_argument(notes, release_exists=True) == []
-    assert deploy.notes_argument(notes, release_exists=False) == [
-        "--releaseNotes",
-        str(notes),
-    ]
+    # 이미 릴리스가 있으면(두 번째 플랫폼) 본문을 건드리지 않는다 — 덮어쓰기 방지.
+    assert deploy.should_apply_notes(release_existed=True) is False
+    assert deploy.should_apply_notes(release_existed=False) is True
+
+    # vpk에는 본문 옵션이 없으므로 gh로 따로 설정한다.
+    cmd = deploy.notes_command("v0.2.0", notes)
+    assert cmd[:4] == ["gh", "release", "edit", "v0.2.0"]
+    assert cmd[cmd.index("--notes-file") + 1] == str(notes)
 
 
 def test_same_version_redeploy_is_blocked() -> None:

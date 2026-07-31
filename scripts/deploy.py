@@ -148,16 +148,33 @@ def upload_assets(out_dir: Path, *, version: str, channel: str) -> list[Path]:
     return selected
 
 
-def notes_argument(notes_path: Path, *, release_exists: bool) -> list[str]:
-    """릴리스 노트 인자. 이미 릴리스가 있으면 **넘기지 않는다**.
+def should_apply_notes(*, release_existed: bool) -> bool:
+    """릴리스 본문을 이번 실행에서 설정해야 하는지.
 
-    노트는 첫 플랫폼에서 한 번만 붙인다. 두 번째 플랫폼이 다시 넘기면 먼저 올라간 노트를
-    덮어쓸 위험이 있다(그리고 두 머신이 서로 다른 노트를 만들 수 있다 — D-10에서 노트를
-    사람이 쓰기로 한 이유이기도 하다).
+    첫 플랫폼에서 한 번만 설정한다. 두 번째 플랫폼이 다시 쓰면 먼저 올라간 노트를 덮어쓴다.
     """
-    if release_exists:
-        return []
-    return ["--releaseNotes", str(notes_path)]
+    return not release_existed
+
+
+def notes_command(tag: str, notes_path: Path) -> list[str]:
+    """릴리스 본문을 설정하는 커맨드.
+
+    ``vpk upload github``에는 본문을 넣는 옵션이 없다(실측: ``--releaseName``만 있다).
+    그래서 업로드가 만든 릴리스에 gh로 본문을 따로 채운다.
+    """
+    return ["gh", "release", "edit", tag, "--notes-file", str(notes_path)]
+
+
+def github_token() -> str:
+    """``vpk upload``에 넘길 GitHub 토큰. gh 로그인 자격증명을 재사용한다.
+
+    vpk는 gh의 자격증명을 알아서 찾지 못하므로 명시적으로 넘겨야 한다.
+    """
+    proc = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
+    token = proc.stdout.strip()
+    if proc.returncode != 0 or not token:
+        fail("GitHub 토큰을 얻지 못했습니다. 'gh auth login'으로 먼저 로그인하세요.")
+    return token
 
 
 def upload_command(
@@ -166,7 +183,7 @@ def upload_command(
     version: str,
     channel: str,
     out_dir: Path,
-    notes: list[str] | None = None,
+    token: str,
     publish: bool = False,
 ) -> list[str]:
     """``vpk upload github`` 커맨드.
@@ -190,9 +207,12 @@ def upload_command(
         str(out_dir),
         "--tag",
         f"v{version}",
+        "--token",
+        token,
+        # bool 옵션이지만 값을 받는 형태로 정의되어 있어 명시적으로 넘긴다.
         "--merge",
-        *(["--publish"] if publish else []),
-        *(notes or []),
+        "true",
+        *(["--publish", "true"] if publish else []),
     ]
 
 
@@ -259,13 +279,19 @@ def main() -> int:
         version=version,
         channel=channel,
         out_dir=out_dir,
-        notes=notes_argument(notes_path, release_exists=exists),
+        token=github_token(),
         publish=args.publish,
     )
     info(f"GitHub 릴리스 업로드: {tag}")
     result = subprocess.run(cmd, cwd=REPO_ROOT)
     if result.returncode != 0:
         fail(f"vpk upload 실패(exit {result.returncode})")
+
+    if should_apply_notes(release_existed=exists):
+        info(f"릴리스 본문 설정: {notes_path}")
+        notes_result = subprocess.run(notes_command(tag, notes_path), cwd=REPO_ROOT)
+        if notes_result.returncode != 0:
+            fail(f"릴리스 본문 설정 실패(exit {notes_result.returncode})")
     if args.publish:
         info(f"완료(공개): {build_script.REPO_URL}/releases/tag/{tag}")
     else:

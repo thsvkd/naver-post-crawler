@@ -361,6 +361,7 @@ def velopack_pack(
     version: str,
     target: str,
     vpk: str,
+    out_dir: Path,
     runner=run,
 ) -> Path:
     """번들을 Velopack 설치기 + 업데이트 패키지로 만든다.
@@ -368,7 +369,7 @@ def velopack_pack(
     기존 GitHub 릴리스를 **먼저 받아**(``vpk download github``) 그 위에 델타를 만든다.
     첫 릴리스거나 네트워크가 안 되면 델타 없이 전체 릴리스로 진행한다.
     """
-    out = velopack_output_dir()
+    out = out_dir
     out.mkdir(parents=True, exist_ok=True)
 
     # 매 빌드는 빈 폴더에서 시작한다. 이전 실행의 산출물이 남아 있으면 vpk가 "이미 같은
@@ -430,7 +431,13 @@ def main() -> int:
         if pruned:
             info(f"번들 밖을 가리키는 심볼릭 링크 {len(pruned)}개 제거: {pruned[0].name} …")
             resign_adhoc(pack_dir)
-    out = velopack_pack(bundle_dir=pack_dir, version=version, target=target, vpk=find_vpk())
+    out = velopack_pack(
+        bundle_dir=pack_dir,
+        version=version,
+        target=target,
+        vpk=find_vpk(),
+        out_dir=velopack_output_dir(),
+    )
     info(f"Velopack 산출물: {out}")
     info(f"릴리스 업로드는 'python scripts/deploy.py'로 진행하세요 (태그 v{version}).")
     return 0
