@@ -36,6 +36,7 @@ from .cookie import load_cookie, parse_cookie_file
 from .crawler import Crawler, CrawlPlan, Outcome, PostResult
 from .errors import (
     BlogNotFound,
+    CafeApiError,
     CafeNotFound,
     InvalidBlogReference,
     InvalidCafeReference,
@@ -316,7 +317,8 @@ def _backup(
         except (BlogNotFound, CafeNotFound) as exc:
             # 형식은 맞지만 없는 블로그/카페다. 입력 오류로 깔끔히 안내한다.
             raise click.BadParameter(str(exc), param_hint="TARGET") from exc
-        except LoginRequired as exc:
+        except (LoginRequired, CafeApiError) as exc:
+            # 원인이 분명한 카페 API 거절이다. 트레이스백 대신 사유만 보여 준다.
             raise click.ClickException(str(exc)) from exc
 
         if limit is not None:

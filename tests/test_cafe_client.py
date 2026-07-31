@@ -15,12 +15,38 @@ import pytest
 
 from naver_post_crawler.cafe_client import NaverCafeClient, _write_ms
 from naver_post_crawler.cafe_ref import CafeReference
-from naver_post_crawler.errors import CafeNotFound, LoginRequired, ParseError
+from naver_post_crawler.errors import CafeApiError, CafeNotFound, LoginRequired, ParseError
 from naver_post_crawler.models import PostMeta
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
 _CLUB_HTML = '<script>var g_sClubId = "29434212";</script>'
+
+# 라이브 API가 실제로 주는 오류 봉투들. 목록 API는 최상위 ``error``에, 글 API는
+# ``result`` 안에 ``errorCode``/``reason``/``message``를 담아 준다.
+_ADULT_AUTH_BODY = {
+    "error": {
+        "errorCode": "11016",
+        "reason": "ADULTAUTH_REQUIRED",
+        "message": (
+            "성인인증이 확인되지 않았습니다. 성인인증을 하신 후 다시 이용해 주시기 바랍니다."
+        ),
+    }
+}
+_NOT_LOGGED_IN_BODY = {
+    "result": {
+        "errorCode": "0004",
+        "reason": "로그인하지 않았습니다.",
+        "message": "errorCode: 0004, message: 로그인 하지 않음",
+    }
+}
+_ARTICLE_GONE_BODY = {
+    "result": {
+        "errorCode": "4003",
+        "reason": "삭제되었거나 존재하지 않는 게시글입니다.",
+        "message": "삭제되었거나 존재하지 않는 게시글입니다.",
+    }
+}
 _SE_ONE_HTML = (
     '<div class="se-main-container">'
     '<div class="se-component se-text"><div class="se-text-paragraph">카페 본문</div></div>'
@@ -313,6 +339,91 @@ def test_forbidden_status_raises_login_required() -> None:
             return httpx.Response(200, text=_CLUB_HTML)
         if "cafe-articleapi" in request.url.path:
             return httpx.Response(403, json={})
+        return httpx.Response(404)
+
+    client = _cafe_client(handler)
+    try:
+        _ = client.cafe_id
+        with pytest.raises(LoginRequired):
+            client.fetch_post_html(101)
+    finally:
+        client.close()
+
+
+def _list_error_client(
+    status: int, body: dict[str, object], calls: dict[str, int]
+) -> NaverCafeClient:
+    """목록 API가 지정한 오류 응답만 주는 클라이언트(호출 횟수를 센다)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/steamindiegame":
+            return httpx.Response(200, text=_CLUB_HTML)
+        if "boardlist-api" in request.url.path:
+            calls["n"] = calls.get("n", 0) + 1
+            return httpx.Response(status, json=body)
+        return httpx.Response(404)
+
+    return _cafe_client(handler, max_retries=3)
+
+
+def test_adult_auth_400_raises_login_required_without_retry() -> None:
+    """covers: Test-1, Test-2 — 성인인증 필요 카페의 400을 재시도 없이 안내한다."""
+    calls: dict[str, int] = {}
+    client = _list_error_client(400, _ADULT_AUTH_BODY, calls)
+    try:
+        with pytest.raises(LoginRequired) as excinfo:
+            list(client.iter_post_meta())
+    finally:
+        client.close()
+
+    # 서버 문구를 되풀이하는 데 그치지 않고, '성인인증을 마친 계정이 필요하다'는
+    # 안내까지 담아야 한다(단순 로그인 안내와 구분된다).
+    message = str(excinfo.value)
+    assert "성인인증을 마친" in message
+    assert "성인인증이 확인되지 않았습니다." in message
+    assert calls["n"] == 1
+
+
+def test_not_logged_in_400_raises_login_required() -> None:
+    """covers: Test-3 — result 봉투에 담긴 로그인 오류도 LoginRequired로 안내한다."""
+    calls: dict[str, int] = {}
+    client = _list_error_client(400, _NOT_LOGGED_IN_BODY, calls)
+    try:
+        with pytest.raises(LoginRequired) as excinfo:
+            list(client.iter_post_meta())
+    finally:
+        client.close()
+
+    message = str(excinfo.value)
+    assert "NID_AUT" in message
+    assert "로그인하지 않았습니다." in message
+    assert calls["n"] == 1
+
+
+def test_other_api_error_surfaces_naver_message() -> None:
+    """covers: Test-4 — 인증과 무관한 4xx는 네이버가 준 사유를 그대로 보여 준다."""
+    calls: dict[str, int] = {}
+    client = _list_error_client(400, _ARTICLE_GONE_BODY, calls)
+    try:
+        with pytest.raises(CafeApiError) as excinfo:
+            list(client.iter_post_meta())
+    finally:
+        client.close()
+
+    message = str(excinfo.value)
+    assert "삭제되었거나 존재하지 않는 게시글입니다." in message
+    assert "400" in message
+    assert calls["n"] == 1
+
+
+def test_article_error_envelope_detected_from_result() -> None:
+    """covers: Test-5 — 글 API의 result 봉투 로그인 오류도 LoginRequired로 바꾼다."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/steamindiegame":
+            return httpx.Response(200, text=_CLUB_HTML)
+        if "cafe-articleapi" in request.url.path:
+            return httpx.Response(200, json=_NOT_LOGGED_IN_BODY)
         return httpx.Response(404)
 
     client = _cafe_client(handler)

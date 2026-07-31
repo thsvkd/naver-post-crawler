@@ -64,6 +64,20 @@ class LoginRequired(CrawlerError):
     """
 
 
+class CafeApiError(CrawlerError):
+    """카페 내부 API가 오류 봉투(``errorCode``/``reason``)로 요청을 거절했을 때 발생.
+
+    상태 코드만으로는 원인을 알 수 없어(예: 성인인증·정책 제한이 모두 400),
+    응답 본문의 사유를 그대로 실어 사용자가 무엇을 해야 할지 알 수 있게 한다.
+    재시도해도 결과가 같으므로 즉시 중단시킨다.
+    """
+
+    def __init__(self, status: int, reason: str) -> None:
+        self.status = status
+        self.reason = reason
+        super().__init__(f"카페 API 요청이 거절되었습니다(HTTP {status}): {reason}")
+
+
 class InvalidCookieFile(CrawlerError):
     """쿠키 파일을 읽거나 해석하지 못했을 때 발생.
 

@@ -25,7 +25,7 @@ from datetime import datetime
 import httpx
 
 from .cafe_ref import CafeReference
-from .errors import CafeNotFound, LoginRequired, ParseError
+from .errors import CafeApiError, CafeNotFound, LoginRequired, ParseError
 from .http import get_with_retry
 from .models import KST, PostMeta
 
@@ -57,6 +57,14 @@ _CLUB_ID_JSON_RE = re.compile(r'"cafeId"\s*:\s*"?(\d+)"?')
 
 # writeDate가 초 단위로 오는 경우를 감지하는 경계(ms면 이 값 이상).
 _MS_THRESHOLD = 1_000_000_000_000
+
+# 오류 봉투 판별·요약에 쓰는 키. 코드 키가 있어야 오류 봉투로 인정한다.
+_ERROR_CODE_KEYS = ("errorCode", "code")
+_ERROR_TEXT_KEYS = ("errorCode", "code", "reason", "msg", "message")
+
+# 인증 문제로 볼 신호(코드·사유·메시지를 합친 문자열에서 찾는다).
+_ADULT_SIGNALS = ("adultauth", "성인인증")
+_LOGIN_SIGNALS = ("login", "로그인", "auth", "권한", "가입", "member", "permission", "forbidden")
 
 
 class NaverCafeClient:
@@ -132,13 +140,29 @@ class NaverCafeClient:
             fatal=self._fatal,
         )
 
-    def _fatal(self, exc: httpx.HTTPStatusError) -> LoginRequired | None:
-        """401/403은 재시도해도 소용없는 인증/권한 문제이므로 즉시 안내한다."""
+    def _fatal(self, exc: httpx.HTTPStatusError) -> LoginRequired | CafeApiError | None:
+        """재시도가 무의미한 4xx를 원인이 드러나는 도메인 예외로 바꾼다.
+
+        카페 API는 상태 코드만으로 원인을 알 수 없다. 성인인증 미완료·로그인 필요가
+        모두 400으로 오고, 사유는 응답 본문의 오류 봉투에만 담긴다. 본문을 읽어
+        인증 문제면 :class:`LoginRequired`로, 그 외 거절이면 네이버가 준 사유를
+        실은 :class:`CafeApiError`로 즉시 중단시킨다(429는 재시도 대상이라 제외).
+        """
         status = exc.response.status_code
+        if not (400 <= status < 500) or status == 429:
+            return None
+        error = _api_error(_json_body(exc.response))
+        if error is not None:
+            guide = _auth_guide(error, f"HTTP {status}")
+            if guide is not None:
+                return LoginRequired(guide)
+            if status not in (401, 403):
+                return CafeApiError(status, _error_text(error))
         if status in (401, 403):
+            detail = f" — 네이버 응답: {_error_text(error)}" if error is not None else ""
             return LoginRequired(
                 f"로그인/권한이 필요합니다(HTTP {status}). "
-                "유효한 NID_AUT/NID_SES 쿠키를 --cookie로 주입하세요."
+                f"유효한 NID_AUT/NID_SES 쿠키를 --cookie로 주입하세요.{detail}"
             )
         return None
 
@@ -253,7 +277,11 @@ class NaverCafeClient:
         if isinstance(article, dict):
             return article
         _raise_for_article_error(data, article_id)
-        raise ParseError(f"카페 글 응답에서 article을 찾을 수 없습니다: articleId={article_id}")
+        error = _api_error(data)
+        detail = f" — {_error_text(error)}" if error is not None else ""
+        raise ParseError(
+            f"카페 글 응답에서 article을 찾을 수 없습니다: articleId={article_id}{detail}"
+        )
 
     def _meta_from_article(self, article_id: int, article: dict[str, object]) -> PostMeta:
         """단일 글 모드에서 v3 글 응답으로 :class:`PostMeta`를 만든다."""
@@ -379,17 +407,72 @@ def _to_int(value: object) -> int | None:
     return None
 
 
-def _raise_for_article_error(data: object, article_id: int) -> None:
-    """응답의 오류 코드/메시지가 로그인·권한 문제면 :class:`LoginRequired`로 던진다."""
-    error = {}
-    if isinstance(data, dict):
-        error = data.get("error") or _unwrap(data).get("error") or {}
-    if not isinstance(error, dict):
-        return
-    blob = f"{error.get('code', '')} {error.get('msg', '') or error.get('message', '')}".lower()
-    login_signals = ("login", "로그인", "auth", "권한", "가입", "member", "permission", "forbidden")
-    if any(signal in blob for signal in login_signals):
-        raise LoginRequired(
-            f"로그인/권한이 필요한 글입니다(articleId={article_id}). "
+def _json_body(response: httpx.Response) -> object:
+    """응답 본문을 JSON으로 읽는다(JSON이 아니면 None)."""
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _api_error(data: object) -> dict[str, object] | None:
+    """응답 본문에서 오류 봉투를 꺼낸다(오류가 아니면 None).
+
+    목록 API는 최상위 ``error``에, 글 API는 ``result`` 안에 오류를 담는 등 봉투가
+    엇갈린다. 오류 코드 키가 있는 dict만 오류로 인정해, 정상 응답(``articleList``/
+    ``article``)을 오류로 오인하지 않는다.
+    """
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if isinstance(error, dict):
+        return error
+    node = _unwrap(data)
+    if any(key in node for key in _ERROR_CODE_KEYS):
+        return node
+    return None
+
+
+def _error_text(error: dict[str, object]) -> str:
+    """오류 봉투의 코드·사유·메시지를 사람이 읽을 한 줄로 합친다(중복은 제거)."""
+    parts: list[str] = []
+    for key in _ERROR_TEXT_KEYS:
+        value = error.get(key)
+        text = str(value).strip() if value is not None else ""
+        if text and text not in parts:
+            parts.append(text)
+    return " / ".join(parts)
+
+
+def _auth_guide(error: dict[str, object], where: str) -> str | None:
+    """오류 봉투가 인증 문제면 사용자가 할 일을 안내하는 문구를 돌려준다.
+
+    ``where``는 원인을 짚어 주는 위치 표시(``"HTTP 400"``/``"articleId=123"``)로,
+    안내 첫 문장 뒤에 붙는다. 성인인증은 로그인만으로는 풀리지 않아(성인인증을
+    마친 계정이 필요) 따로 구분하며, 성인인증 사유(``ADULTAUTH_REQUIRED``)도
+    로그인 신호(``auth``)에 걸리므로 반드시 먼저 검사한다.
+    """
+    blob = _error_text(error).lower()
+    if any(signal in blob for signal in _ADULT_SIGNALS):
+        guide = (
+            f"성인인증이 필요한 카페입니다({where}). 성인인증을 마친 네이버 계정으로 "
+            "로그인한 뒤 그 세션 쿠키(NID_AUT/NID_SES)를 --cookie로 주입하세요."
+        )
+    elif any(signal in blob for signal in _LOGIN_SIGNALS):
+        guide = (
+            f"로그인/권한이 필요합니다({where}). "
             "유효한 NID_AUT/NID_SES 쿠키를 --cookie로 주입하세요."
         )
+    else:
+        return None
+    return f"{guide} — 네이버 응답: {_error_text(error)}"
+
+
+def _raise_for_article_error(data: object, article_id: int) -> None:
+    """응답의 오류 봉투가 로그인·권한 문제면 :class:`LoginRequired`로 던진다."""
+    error = _api_error(data)
+    if error is None:
+        return
+    guide = _auth_guide(error, f"articleId={article_id}")
+    if guide is not None:
+        raise LoginRequired(guide)
