@@ -322,3 +322,56 @@ def test_repo_url_comes_from_app_module() -> None:
     from naver_post_crawler import velopack_update
 
     assert build.REPO_URL == velopack_update.REPO_URL
+
+
+def test_velopack_pack_clears_stale_local_artifacts(tmp_path: Path, monkeypatch) -> None:
+    # covers: Test-13
+    # 실측 버그: 같은 버전을 두 번 빌드하면 vpk가 "There is a release in channel osx which is
+    # equal or greater to the current version"으로 거부한다. 이전 pack 산출물이 출력 폴더에
+    # 남아 있기 때문이다. 델타 기준은 vpk download가 GitHub에서 다시 받아 오므로, 매 빌드는
+    # 빈 폴더에서 시작해야 재현 가능하다.
+    out = tmp_path / "velopack"
+    out.mkdir()
+    stale = out / "NaverPostCrawler-0.2.0-osx-full.nupkg"
+    stale.write_text("이전 실행 잔재", encoding="utf-8")
+    monkeypatch.setattr(build, "velopack_output_dir", lambda: out)
+
+    order: list[str] = []
+
+    def fake_runner(cmd: list[str], **_kwargs: object) -> int:
+        # download가 도는 시점에는 이미 폴더가 비어 있어야 한다.
+        order.append("download" if "download" in cmd else "pack")
+        if "download" in cmd:
+            assert not stale.exists(), "잔재를 지우기 전에 download를 돌리면 안 된다"
+        return 0
+
+    build.velopack_pack(
+        bundle_dir=_app_bundle(tmp_path),
+        version="0.2.0",
+        target="macos",
+        vpk="vpk",
+        runner=fake_runner,
+    )
+
+    assert order == ["download", "pack"]
+    assert not stale.exists()
+
+
+def test_velopack_pack_keeps_release_notes(tmp_path: Path, monkeypatch) -> None:
+    # covers: Test-13 (사람이 쓴 릴리스 노트를 빌드가 지워버리면 안 된다)
+    out = tmp_path / "velopack"
+    out.mkdir()
+    notes = out / "RELEASE_NOTES.md"
+    notes.write_text("사람이 쓴 노트", encoding="utf-8")
+    monkeypatch.setattr(build, "velopack_output_dir", lambda: out)
+
+    build.velopack_pack(
+        bundle_dir=_app_bundle(tmp_path),
+        version="0.2.0",
+        target="macos",
+        vpk="vpk",
+        runner=lambda _cmd, **_kw: 0,
+    )
+
+    assert notes.is_file()
+    assert notes.read_text(encoding="utf-8") == "사람이 쓴 노트"

@@ -57,6 +57,9 @@ APP_EXE_WINDOWS = "naver-post-crawler.exe"
 # Windows와 macOS 산출물을 같은 GitHub 릴리스 태그에 함께 올려도 파일명이 겹치지 않는 이유다.
 _CHANNELS = {"windows": "win", "macos": "osx"}
 
+# 사람이 작성하는 릴리스 노트 파일 이름(Velopack 산출물이 아니라 빌드가 지우지 않는다).
+_RELEASE_NOTES = "RELEASE_NOTES.md"
+
 # Visual Studio C++ 빌드 도구 워크로드 식별자.
 _VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
@@ -367,6 +370,15 @@ def velopack_pack(
     """
     out = velopack_output_dir()
     out.mkdir(parents=True, exist_ok=True)
+
+    # 매 빌드는 빈 폴더에서 시작한다. 이전 실행의 산출물이 남아 있으면 vpk가 "이미 같은
+    # 버전 릴리스가 있다"며 거부해 **두 번째 빌드부터 항상 실패한다**(실측). 델타 기준은
+    # 바로 아래 vpk download가 GitHub에서 다시 받아 오므로 지워도 잃는 것이 없다.
+    # 사람이 쓴 릴리스 노트는 vpk 산출물이 아니므로 보존한다.
+    for path in out.iterdir():
+        if path.name == _RELEASE_NOTES:
+            continue
+        shutil.rmtree(path) if path.is_dir() else path.unlink()
 
     info("기존 Velopack 릴리스 조회(델타 기준)…")
     if runner([vpk, *vpk_download_args(target)], cwd=REPO_ROOT) != 0:
