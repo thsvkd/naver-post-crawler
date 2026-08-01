@@ -68,3 +68,16 @@ def test_readme_documents_the_windows_removal_entry_point() -> None:
     section = readme[readme.index("제거") :]
 
     assert "설정" in section and "앱" in section, "Windows 표준 제거 경로 안내가 없다"
+
+
+def test_readme_keychain_command_matches_the_names_actually_used() -> None:
+    # covers: Test-16
+    # macOS 데이터 경로는 빌드 설정과 대조하면서 자격증명 이름만 빠뜨리면, SERVICE를
+    # 바꾸는 순간 문서가 조용히 거짓이 된다. 사용자는 지웠다고 믿은 채 항목을 남긴다.
+    from naver_post_crawler import credentials
+
+    match = re.search(r"security delete-generic-password\s+-s\s+(\S+)\s+-a\s+(\S+)", _readme())
+
+    assert match is not None, "README에 키체인 삭제 명령이 없다"
+    assert match.group(1) == credentials.SERVICE
+    assert match.group(2) == credentials.ACCOUNT
