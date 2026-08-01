@@ -14,6 +14,13 @@ Windows와 macOS 산출물은 **같은 태그 하나**에 함께 올린다. Velo
     uv run python scripts/deploy.py               # 빌드 + 업로드(draft 상태로 남는다)
     uv run python scripts/deploy.py --skip-build  # 이미 빌드된 dist/velopack을 올리기만 한다
     uv run python scripts/deploy.py --publish     # 두 플랫폼이 다 올라간 뒤 공개한다
+    uv run python scripts/deploy.py --force       # 저장소 상태 게이트를 무시한다(복구용)
+
+배포 전에 저장소 상태를 두 가지로 확인한다. 빌드는 **작업 트리의 파일**을 번들에 담는데
+태그는 커밋을 가리키므로, 둘이 어긋나면 어느 커밋에도 없는 코드가 그 버전으로 배포된다.
+
+    1. 미커밋 변경(추적되지 않는 파일 포함)이 없을 것.
+    2. HEAD가 원격에 push되어 있을 것 — 이 스크립트는 push를 대신 하지 않는다.
 
 절차:
     0. pyproject.toml의 [project].version(SSOT)을 미리 올려 둔다. 이전 릴리스와 같으면
@@ -59,6 +66,88 @@ _DEFAULT_CHANNEL = "win"
 def require_gh() -> None:
     if shutil.which("gh") is None:
         fail("gh(GitHub CLI)가 필요합니다. https://cli.github.com/ 를 참고하세요.")
+
+
+def worktree_status() -> str | None:
+    """``git status --porcelain`` 출력. 확인할 수 없으면 ``None``."""
+    proc = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def head_commit() -> str | None:
+    """지금 체크아웃된 커밋 SHA. 확인할 수 없으면 ``None``."""
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def remote_has_commit(sha: str) -> bool:
+    """``sha`` 가 GitHub 쪽에 있는지(= push 됐는지).
+
+    로컬의 ``@{u}`` 는 ``git fetch`` 전이면 낡아 있어 믿을 수 없으므로 원격에 직접 묻는다.
+    """
+    proc = subprocess.run(
+        ["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".sha"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def check_worktree_clean(porcelain_status: str | None, *, force: bool) -> str | None:
+    """워킹 트리가 깨끗한지. 문제가 있으면 오류 메시지, 없으면 ``None``(순수 함수).
+
+    빌드는 **작업 트리의 파일**을 그대로 번들에 담는데(flet은 src/를 복사한다) 태그는 커밋을
+    가리킨다. 미커밋 변경이 있는 채로 배포하면 "그 버전이라고 이름 붙었지만 어느 커밋에도
+    없는 코드"가 사용자에게 나가고, 나중에 그 버전을 재현할 수 없다. 추적되지 않는 파일도
+    똑같이 번들에 들어가므로 함께 막는다.
+    """
+    if force:
+        return None
+    if porcelain_status is None:
+        return (
+            "git status를 확인하지 못했습니다 — 저장소 상태를 모르는 채로 배포할 수 없습니다"
+            "(정말 강행하려면 --force)."
+        )
+    dirty = [line for line in porcelain_status.splitlines() if line.strip()]
+    if not dirty:
+        return None
+    shown = "\n".join(f"    {line}" for line in dirty[:10])
+    more = f"\n    … 외 {len(dirty) - 10}개" if len(dirty) > 10 else ""
+    return (
+        "커밋되지 않은 변경이 있습니다 — 빌드 산출물에는 들어가지만 태그가 가리키는 커밋에는 "
+        "없는 코드가 배포됩니다.\n"
+        f"{shown}{more}\n"
+        "  커밋(필요하면 push)한 뒤 다시 실행하세요(정말 강행하려면 --force)."
+    )
+
+
+def check_head_pushed(commit: str | None, *, remote_has_head: bool, force: bool) -> str | None:
+    """HEAD가 원격에 올라가 있는지. 문제가 있으면 오류 메시지, 없으면 ``None``(순수 함수).
+
+    이 스크립트는 ``git push``를 하지 않는다(사용자의 브랜치를 말없이 밀어 올리는 건 이 도구가
+    할 일이 아니다). 그런데 릴리스 태그는 원격에 있는 커밋만 가리킬 수 있으므로, push하지 않은
+    채 배포하면 태그가 방금 빌드한 코드가 아니라 원격 기본 브랜치의 tip을 가리키게 된다.
+    """
+    if force:
+        return None
+    if commit is None:
+        return "HEAD 커밋을 확인하지 못했습니다(git 저장소가 맞습니까?)."
+    if not remote_has_head:
+        return (
+            f"현재 커밋({commit[:8]})이 GitHub에 없습니다 — 먼저 push하세요.\n"
+            "  git push\n"
+            "  (push하지 않으면 릴리스 태그가 이 커밋을 가리킬 수 없습니다.)"
+        )
+    return None
 
 
 def latest_release_tag() -> str | None:
@@ -269,9 +358,29 @@ def main() -> int:
         default=None,
         help="릴리스 노트 파일(기본: dist/velopack/RELEASE_NOTES.md). 사람이 작성한다.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="미커밋 변경·미push HEAD 검사를 무시한다(재실행 복구용).",
+    )
     args = parser.parse_args()
 
     require_gh()
+
+    # --dry-run은 빌드도 업로드도 하지 않으므로 아래 두 가드를 건너뛴다 — 무엇이 올라갈지만
+    # 보려는 것뿐인데 커밋을 강요하면 쓸모가 없다.
+    if not args.dry_run:
+        error = check_worktree_clean(worktree_status(), force=args.force)
+        if error:
+            fail(error)
+        commit = head_commit()
+        error = check_head_pushed(
+            commit,
+            remote_has_head=remote_has_commit(commit) if commit else False,
+            force=args.force,
+        )
+        if error:
+            fail(error)
     version = pyproject_version()
     tag = f"v{version}"
     target = build_script.current_target()

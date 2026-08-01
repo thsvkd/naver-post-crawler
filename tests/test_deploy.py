@@ -170,3 +170,55 @@ def test_unwanted_assets_never_touch_the_other_platform() -> None:
     unwanted = deploy.unwanted_release_assets(released, expected=[], channel="win")
 
     assert unwanted == [], "osx 에셋과 레거시 인덱스는 win 실행이 지우면 안 된다"
+
+
+# -- 배포 전 저장소 상태 게이트 -------------------------------------------------
+# 빌드는 **작업 트리의 파일**을 번들에 담는데 태그는 커밋을 가리킨다. 둘이 어긋나면 "그
+# 버전이라고 이름 붙었지만 어느 커밋에도 없는 코드"가 배포되고 재현이 불가능해진다.
+# 이 스크립트는 push를 대신 하지 않으므로, push되지 않은 커밋에서의 배포도 막아야 한다.
+
+
+def test_clean_worktree_passes() -> None:
+    assert deploy.check_worktree_clean("", force=False) is None
+    assert deploy.check_worktree_clean("\n\n", force=False) is None
+
+
+def test_dirty_worktree_is_blocked() -> None:
+    error = deploy.check_worktree_clean(" M src/naver_post_crawler/cookie.py\n", force=False)
+
+    assert error is not None
+    assert "cookie.py" in error
+
+
+def test_untracked_file_is_blocked() -> None:
+    # 추적되지 않는 파일도 flet이 src/를 복사할 때 번들에 함께 들어간다.
+    assert deploy.check_worktree_clean("?? src/naver_post_crawler/patch.py\n", force=False)
+
+
+def test_unknown_git_status_is_blocked() -> None:
+    # 조회 실패를 "깨끗함"으로 오해하면 게이트가 통째로 무력해진다.
+    assert deploy.check_worktree_clean(None, force=False) is not None
+
+
+def test_force_bypasses_worktree_gate() -> None:
+    assert deploy.check_worktree_clean(" M x.py\n", force=True) is None
+    assert deploy.check_worktree_clean(None, force=True) is None
+
+
+def test_pushed_head_passes() -> None:
+    assert deploy.check_head_pushed("abc1234", remote_has_head=True, force=False) is None
+
+
+def test_unpushed_head_is_blocked() -> None:
+    error = deploy.check_head_pushed("abc1234def", remote_has_head=False, force=False)
+
+    assert error is not None
+    assert "push" in error
+
+
+def test_unknown_head_is_blocked() -> None:
+    assert deploy.check_head_pushed(None, remote_has_head=False, force=False) is not None
+
+
+def test_force_bypasses_push_gate() -> None:
+    assert deploy.check_head_pushed("abc1234", remote_has_head=False, force=True) is None
