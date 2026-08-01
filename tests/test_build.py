@@ -378,3 +378,56 @@ def test_velopack_pack_keeps_release_notes(tmp_path: Path) -> None:
 
     assert notes.is_file()
     assert notes.read_text(encoding="utf-8") == "사람이 쓴 노트"
+
+
+# -- Windows CRT 스테이징 ----------------------------------------------------------------
+# 실측 실패: serious_python_windows 플러그인의 CMakeLists가 CRT를 `$ENV{WINDIR}/System32`
+# 에서 가져오는데, VS가 주는 cmake.exe가 32비트라 그 경로가 WOW64로 SysWOW64에 리다이렉트
+# 된다. vcruntime140_1.dll은 **x64 전용**이라 SysWOW64에는 존재할 수 없어 빌드가 죽는다.
+# 공식 MSVC redist 폴더에서 x64 DLL을 모아 두고 WINDIR을 그쪽으로 돌린다.
+
+
+def test_prepare_windows_crt_stages_x64_dlls(tmp_path: Path) -> None:
+    # covers: Test-12
+    redist = tmp_path / "redist" / "x64" / "Microsoft.VC143.CRT"
+    redist.mkdir(parents=True)
+    for name in build.WINDOWS_CRT_DLLS:
+        (redist / name).write_text(name, encoding="utf-8")
+    staging = tmp_path / "crt"
+
+    result = build.prepare_windows_crt(staging, redist_crt_dir=redist)
+
+    assert result == staging
+    for name in build.WINDOWS_CRT_DLLS:
+        staged = staging / "System32" / name
+        assert staged.is_file(), f"{name}이 스테이징되지 않았다"
+        assert staged.read_text(encoding="utf-8") == name
+
+
+def test_prepare_windows_crt_returns_none_without_redist(tmp_path: Path) -> None:
+    # covers: Test-12 (redist를 못 찾으면 기존 동작을 그대로 둔다 — WINDIR을 건드리지 않는다)
+    assert build.prepare_windows_crt(tmp_path / "crt", redist_crt_dir=None) is None
+
+
+def test_prepare_windows_crt_fails_when_dll_missing(tmp_path: Path) -> None:
+    # covers: Test-12 (일부만 복사해 두면 빌드가 더 뒤에서 알 수 없는 이유로 죽는다)
+    redist = tmp_path / "redist"
+    redist.mkdir()
+    (redist / build.WINDOWS_CRT_DLLS[0]).write_text("x", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        build.prepare_windows_crt(tmp_path / "crt", redist_crt_dir=redist)
+
+
+def test_find_msvc_redist_crt_dir_picks_newest_x64(tmp_path: Path) -> None:
+    # covers: Test-12
+    base = tmp_path / "MSVC"
+    for version in ("14.40.33807", "14.44.35112"):
+        (base / version / "x64" / "Microsoft.VC143.CRT").mkdir(parents=True)
+    (base / "v143").mkdir()  # 버전이 아닌 항목은 무시한다
+
+    found = build.find_msvc_redist_crt_dir(base)
+
+    assert found is not None
+    assert "14.44.35112" in str(found)
+    assert found.name == "Microsoft.VC143.CRT"

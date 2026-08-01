@@ -60,6 +60,14 @@ _CHANNELS = {"windows": "win", "macos": "osx"}
 # 사람이 작성하는 릴리스 노트 파일 이름(Velopack 산출물이 아니라 빌드가 지우지 않는다).
 _RELEASE_NOTES = "RELEASE_NOTES.md"
 
+# serious_python_windows 플러그인이 번들에 넣는 CRT DLL. 그 플러그인의 CMakeLists가
+# ``$ENV{WINDIR}/System32``에서 가져오는데, Visual Studio가 주는 cmake.exe가 32비트라
+# 그 경로가 WOW64로 SysWOW64에 리다이렉트된다. vcruntime140_1.dll은 **x64 전용**이라
+# SysWOW64에는 존재할 수 없어 빌드가 죽는다(실측). 공식 MSVC redist 폴더에서 x64 DLL을
+# 모아 두고 WINDIR을 그쪽으로 돌려 해결한다 — 시스템 디렉터리는 건드리지 않는다.
+WINDOWS_CRT_DLLS = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+_MSVC_REDIST_BASE = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC"
+
 # Visual Studio C++ 빌드 도구 워크로드 식별자.
 _VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 
@@ -126,6 +134,44 @@ def ensure_windows_toolchain() -> None:
         '    --override "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 '
         '--includeRecommended --passive"'
     )
+
+
+def find_msvc_redist_crt_dir(base: Path | None = None) -> Path | None:
+    """MSVC x64 CRT redist 폴더(가장 최신 버전). 없으면 None.
+
+    ``<base>/<버전>/x64/Microsoft.VC*.CRT`` 구조에서 버전 문자열이 가장 큰 것을 고른다.
+    """
+    base = base or Path(_MSVC_REDIST_BASE)
+    if not base.is_dir():
+        return None
+    candidates: list[tuple[list[int], Path]] = []
+    for version_dir in base.iterdir():
+        parts = version_dir.name.split(".")
+        if not version_dir.is_dir() or not all(p.isdigit() for p in parts):
+            continue
+        for crt_dir in sorted((version_dir / "x64").glob("Microsoft.VC*.CRT")):
+            candidates.append(([int(p) for p in parts], crt_dir))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def prepare_windows_crt(staging: Path, *, redist_crt_dir: Path | None) -> Path | None:
+    """CRT DLL을 ``<staging>/System32``에 모아 두고 staging 경로를 돌려준다.
+
+    빌드에서 ``WINDIR``을 이 경로로 바꿔 주면 플러그인이 여기서 x64 DLL을 가져간다.
+    redist를 못 찾으면 None을 돌려 기존 동작(진짜 WINDIR)을 그대로 둔다.
+    """
+    if redist_crt_dir is None:
+        return None
+    target = staging / "System32"
+    target.mkdir(parents=True, exist_ok=True)
+    for name in WINDOWS_CRT_DLLS:
+        source = redist_crt_dir / name
+        if not source.is_file():
+            fail(f"MSVC redist에 {name}이 없습니다: {redist_crt_dir}")
+        shutil.copy2(source, target / name)
+    return staging
 
 
 def flet_version() -> str:
@@ -407,6 +453,16 @@ def main() -> int:
     # 코덱(cp949)으로는 인코딩할 수 없어 UnicodeEncodeError로 죽는다. 자식 Python을
     # UTF-8 모드로 강제해 회피한다(다른 OS엔 무해).
     build_env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+    if target == "windows":
+        # CRT를 공식 redist에서 가져가게 한다(위 WINDOWS_CRT_DLLS 주석 참고).
+        # SystemRoot는 건드리지 않는다 — Windows API가 실제로 보는 값은 그쪽이다.
+        crt = prepare_windows_crt(
+            REPO_ROOT / "build" / "_crt", redist_crt_dir=find_msvc_redist_crt_dir()
+        )
+        if crt is not None:
+            build_env["WINDIR"] = str(crt)
+            info(f"CRT 스테이징: {crt} (WINDIR 재지정)")
 
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
