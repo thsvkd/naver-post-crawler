@@ -19,6 +19,11 @@ dependencies = [
     # 그려지지 않는다(빈 창). dev 그룹의 flet-cli와 **정확히 같은 버전**으로 고정한다.
     "flet-desktop==0.85.1",
     "httpx>=0.28.1",
+    # 세션 자격증명(네이버 로그인 쿠키)을 OS 보관소에 넣는다 — macOS 키체인,
+    # Windows 자격 증명 관리자. 평문 파일로 두면 앱을 지워도 자격증명이 디스크에 남고,
+    # 평소에도 노출된 상태가 된다. macOS/Windows 백엔드는 순수 파이썬 + ctypes라
+    # 네이티브 확장 없이 번들에 들어간다(백엔드는 credentials.py가 명시 지정한다).
+    "keyring>=25.0",
     "rich>=15.0.0",
     "selectolax>=0.4.9",
     # 앱 내 웹뷰 네이버 로그인(cookie_login). pywebview로 네이티브 웹뷰를 별도

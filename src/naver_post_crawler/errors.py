@@ -78,6 +78,15 @@ class CafeApiError(CrawlerError):
         super().__init__(f"카페 API 요청이 거절되었습니다(HTTP {status}): {reason}")
 
 
+class CredentialStoreError(CrawlerError):
+    """OS 자격증명 보관소(키체인/자격 증명 관리자)에 기록하지 못했을 때 발생.
+
+    사용자가 키체인 접근을 거부했거나, 백엔드가 없거나, 값이 플랫폼 크기 한도를 넘은
+    경우다. 조회 실패는 "저장된 자격증명 없음"으로 처리하지만(앱은 계속 동작한다),
+    저장 실패는 조용히 넘기면 사용자가 로그인했다고 오해하므로 이 예외로 알린다.
+    """
+
+
 class InvalidCookieFile(CrawlerError):
     """쿠키 파일을 읽거나 해석하지 못했을 때 발생.
 

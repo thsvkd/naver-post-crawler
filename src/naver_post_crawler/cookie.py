@@ -5,8 +5,9 @@
 버튼이 이 문자열을 앱 내부 저장소에 저장하고, CLI/GUI가 카페 접근에 재사용한다.
 
 .. note::
-    저장되는 쿠키는 로그인 세션 그 자체다. 앱 내부 저장소(사용자 전용 경로)에
-    평문으로 두되, 가능한 플랫폼에서는 소유자 전용 권한(0o600)으로 제한한다.
+    저장되는 쿠키는 로그인 세션 그 자체다. 그래서 파일이 아니라 **OS 자격증명 보관소**에
+    보관한다(:mod:`naver_post_crawler.credentials`). v0.1.1까지 쓰던 평문 파일은
+    :func:`migrate_legacy_cookie`이 앱 시작 시 보관소로 옮기고 삭제한다.
 """
 
 from __future__ import annotations
@@ -17,13 +18,16 @@ import os
 import sys
 from pathlib import Path
 
-from .errors import InvalidCookieFile
+from . import credentials
+from .errors import CredentialStoreError, InvalidCookieFile
 
 logger = logging.getLogger(__name__)
 
 # 내부 저장소 하위 디렉터리·파일 이름.
 _APP_DIR = "naver-post-crawler"
 _COOKIE_FILE = "cafe_cookie.txt"
+# v0.1.1까지 세션 쿠키를 평문으로 담던 파일. 이제는 이관 후 삭제 대상일 뿐이다.
+LEGACY_COOKIE_FILE = _COOKIE_FILE
 
 # Netscape 포맷에서 HttpOnly 쿠키(NID_AUT 등)는 이 접두사로 위장돼 주석처럼 보인다.
 _HTTPONLY_PREFIX = "#HttpOnly_"
@@ -167,28 +171,58 @@ def app_data_dir() -> Path:
     return base
 
 
-def stored_cookie_path(directory: Path | None = None) -> Path:
-    """저장된 쿠키 파일 경로(기본: 앱 내부 저장소)."""
-    return (directory or app_data_dir()) / _COOKIE_FILE
+def legacy_cookie_path(directory: Path | None = None) -> Path:
+    """평문 쿠키 파일 경로. 이제는 **이관 후 삭제 대상**일 뿐 저장에 쓰지 않는다."""
+    return (directory or app_data_dir()) / LEGACY_COOKIE_FILE
 
 
-def save_cookie(cookie: str, directory: Path | None = None) -> Path:
-    """쿠키 문자열을 내부 저장소에 저장하고 경로를 돌려준다(소유자 전용 권한 시도)."""
-    path = stored_cookie_path(directory)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(cookie.strip(), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        # 일부 플랫폼(Windows 등)은 POSIX 권한을 지원하지 않는다. 저장 자체는 성공했다.
-        logger.debug("쿠키 파일 권한 설정을 건너뜀(플랫폼 미지원일 수 있음)", exc_info=True)
-    return path
+def save_cookie(cookie: str) -> None:
+    """쿠키 문자열을 OS 보관소에 저장한다(파일로 쓰지 않는다).
+
+    Raises:
+        CredentialStoreError: 보관소에 기록하지 못했을 때. 호출자가 사용자에게 알린다.
+    """
+    credentials.save(cookie.strip())
 
 
-def load_cookie(directory: Path | None = None) -> str | None:
-    """저장된 쿠키 문자열을 읽는다(없으면 None)."""
-    path = stored_cookie_path(directory)
+def load_cookie() -> str | None:
+    """보관된 쿠키 문자열(없으면 ``None``). 보관소를 못 읽어도 예외를 올리지 않는다."""
+    return credentials.load()
+
+
+def delete_cookie() -> None:
+    """보관된 쿠키를 지운다(없어도 조용히 넘어간다)."""
+    credentials.delete()
+
+
+def migrate_legacy_cookie(directory: Path | None = None) -> None:
+    """평문 쿠키 파일이 남아 있으면 보관소로 옮기고 **파일을 지운다**.
+
+    앱이 시작할 때 부른다. 설치 시점이 아니라 시작 시점인 이유는 OTA 업데이트가 새 설치가
+    아니어서, 설치 훅에만 걸면 기존 사용자 대부분이 누락되기 때문이다.
+
+    보관소 기록이 실패해도 평문 파일은 지운다. 자격증명 노출을 없애는 것이 이 작업의
+    목적이고, 세션 쿠키는 재로그인으로 다시 얻을 수 있는 값이다(핸드오프 D-3).
+    어떤 실패도 밖으로 내보내지 않는다 — 이관 때문에 앱이 시작하지 못하면 안 된다.
+    """
+    path = legacy_cookie_path(directory)
     if not path.exists():
-        return None
-    cookie = path.read_text(encoding="utf-8").strip()
-    return cookie or None
+        return
+    try:
+        cookie = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        logger.debug("평문 쿠키 파일을 읽지 못했습니다", exc_info=True)
+        cookie = ""
+    # 이미 보관소에 값이 있으면 덮어쓰지 않는다 — 새 로그인으로 얻은 최신 쿠키를
+    # 옛 파일이 되돌리면 안 된다.
+    if cookie and credentials.load() is None:
+        try:
+            credentials.save(cookie)
+        except CredentialStoreError:
+            logger.warning("평문 쿠키를 보관소로 옮기지 못했습니다. 다시 로그인해 주세요.")
+    try:
+        path.unlink()
+    except OSError:
+        logger.warning("평문 쿠키 파일을 지우지 못했습니다: %s", path, exc_info=True)
+    else:
+        logger.info("평문 쿠키 파일을 OS 보관소로 옮기고 삭제했습니다.")

@@ -25,11 +25,18 @@ from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
-from .cookie import app_data_dir, load_cookie, parse_cookie_file, save_cookie
+from .cookie import (
+    app_data_dir,
+    load_cookie,
+    migrate_legacy_cookie,
+    parse_cookie_file,
+    save_cookie,
+)
 from .cookie_login import is_helper_mode, login_and_capture, run_helper
 from .crawler import Crawler, Outcome
 from .errors import (
     CrawlerError,
+    CredentialStoreError,
     InvalidBlogReference,
     InvalidCafeReference,
     InvalidCookieFile,
@@ -350,8 +357,9 @@ class CrawlerGUI:
             return
         try:
             save_cookie(cookie)
-        except OSError as exc:
-            # 파싱은 됐으나 내부 저장에 실패(디스크/권한 등). 조용히 넘기지 않고 알린다.
+        except CredentialStoreError as exc:
+            # 파싱은 됐으나 OS 보관소 기록에 실패(접근 거부·한도 초과 등).
+            # 조용히 넘기면 사용자가 로그인됐다고 오해하므로 알린다.
             logger.error("쿠키 저장 실패", exc_info=True)
             self._set_cookie_status(f"쿠키 저장 실패: {exc}", ft.Colors.RED)
             return
@@ -382,7 +390,14 @@ class CrawlerGUI:
         try:
             header = login_and_capture()
             if header:
-                save_cookie(header)
+                try:
+                    save_cookie(header)
+                except CredentialStoreError as exc:
+                    # 로그인은 됐는데 보관소 기록이 실패한 경우. 성공으로 표시하면
+                    # 사용자는 백업이 왜 안 되는지 알 수 없다.
+                    logger.error("로그인 쿠키 저장 실패", exc_info=True)
+                    self._set_cookie_status(f"쿠키 저장 실패: {exc}", ft.Colors.RED)
+                    return
                 self._set_cookie_status(
                     "네이버 로그인 완료 — 쿠키를 저장했습니다. 카페 백업에 자동 사용됩니다. ✓",
                     ft.Colors.GREEN,
@@ -851,6 +866,10 @@ def main() -> None:
     """
     if is_helper_mode():
         raise SystemExit(run_helper())
+    # v0.1.1까지 쓰던 평문 쿠키 파일이 남아 있으면 OS 보관소로 옮기고 지운다. 설치 시점이
+    # 아니라 여기서 하는 이유는 OTA 업데이트가 새 설치가 아니기 때문이다(핸드오프 D-6).
+    # 헬퍼 모드보다 뒤에 두어 로그인 창을 띄우는 자식 프로세스가 중복 실행하지 않게 한다.
+    migrate_legacy_cookie()
     ft.run(_view)
 
 

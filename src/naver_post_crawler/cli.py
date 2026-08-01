@@ -32,7 +32,7 @@ from .blog_id import resolve_blog_id
 from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
-from .cookie import load_cookie, parse_cookie_file
+from .cookie import load_cookie, migrate_legacy_cookie, parse_cookie_file
 from .crawler import Crawler, CrawlPlan, Outcome, PostResult
 from .errors import (
     BlogNotFound,
@@ -164,6 +164,11 @@ def main(
     주소(cafe.naver.com/...)다. 카페 주소면 카페 모드로 동작하며, 로그인/등급
     제한 게시판은 --cookie(문자열)나 --cookie-file(파일)로 세션 쿠키를 주입해야 한다.
     """
+    # v0.1.1까지 쓰던 평문 쿠키 파일이 남아 있으면 OS 보관소로 옮기고 지운다.
+    # GUI(gui.main)와 같은 이유로 시작 시점에 한다 — 파일이 남아 있는 한 자격증명은
+    # 계속 평문으로 디스크에 있다.
+    migrate_legacy_cookie()
+
     # --check-update: 최신 릴리스만 확인하고 종료한다(TARGET 불필요). 네트워크 오류는
     # 트레이스백 대신 경고로 삼켜 크롤링 없이 조용히 끝낸다.
     if check_update:

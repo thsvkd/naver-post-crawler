@@ -1,4 +1,8 @@
-"""쿠키 파일 파싱(Netscape/JSON)과 내부 저장/로드 테스트."""
+"""쿠키 파일 파싱(Netscape/JSON)과 앱 데이터 경로 테스트.
+
+세션 쿠키의 저장/조회는 OS 보관소로 옮겼다 — ``tests/test_credentials.py``와
+``tests/test_cookie_migration.py``가 담당한다.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +15,7 @@ import pytest
 from naver_post_crawler.cookie import (
     app_data_dir,
     format_cookie_header,
-    load_cookie,
     parse_cookie_file,
-    save_cookie,
-    stored_cookie_path,
 )
 from naver_post_crawler.errors import InvalidCookieFile
 
@@ -146,23 +147,6 @@ def test_parse_invalid_json_raises(tmp_path: Path) -> None:
     path = _write(tmp_path, "bad.json", "[{not valid json")
     with pytest.raises(InvalidCookieFile):
         parse_cookie_file(path)
-
-
-def test_save_and_load_roundtrip(tmp_path: Path) -> None:
-    assert load_cookie(directory=tmp_path) is None
-    saved = save_cookie("NID_AUT=a; NID_SES=b", directory=tmp_path)
-    assert saved == stored_cookie_path(tmp_path)
-    assert saved.exists()
-    assert load_cookie(directory=tmp_path) == "NID_AUT=a; NID_SES=b"
-
-
-def test_save_strips_whitespace(tmp_path: Path) -> None:
-    save_cookie("  NID_SES=x  \n", directory=tmp_path)
-    assert load_cookie(directory=tmp_path) == "NID_SES=x"
-
-
-def test_load_absent_returns_none(tmp_path: Path) -> None:
-    assert load_cookie(directory=tmp_path) is None
 
 
 def test_app_data_dir_uses_flet_storage_env(
