@@ -148,6 +148,42 @@ def upload_assets(out_dir: Path, *, version: str, channel: str) -> list[Path]:
     return selected
 
 
+def unwanted_release_assets(released: list[str], *, expected: list[str], channel: str) -> list[str]:
+    """업로드 뒤 릴리스에서 지워야 할 에셋 이름.
+
+    ``vpk upload``는 우리가 고른 목록이 아니라 outputDir의 ``assets.<channel>.json``
+    인덱스를 보고 올린다. Windows에는 ``--noPortable``이 없어 Portable.zip이 항상 만들어지고
+    함께 올라간다(실측). 설치기·업데이트 패키지·피드만 있으면 되므로 나머지는 정리한다.
+
+    **이번 채널의 에셋만** 후보로 삼는다. 다른 플랫폼이 먼저 올려 둔 것과 레거시
+    ``RELEASES``는 건드리지 않는다.
+    """
+    keep = set(expected)
+    return [
+        name
+        for name in released
+        if name not in keep and _matches_channel(name, channel) and f"-{channel}-" in name
+    ]
+
+
+def delete_asset_command(tag: str, name: str) -> list[str]:
+    """릴리스 에셋 하나를 지우는 커맨드."""
+    return ["gh", "release", "delete-asset", tag, name, "-y"]
+
+
+def released_asset_names(tag: str) -> list[str]:
+    """릴리스에 현재 올라가 있는 에셋 이름 목록."""
+    proc = subprocess.run(
+        ["gh", "release", "view", tag, "--json", "assets", "--jq", ".assets[].name"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return []
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
 def should_apply_notes(*, release_existed: bool) -> bool:
     """릴리스 본문을 이번 실행에서 설정해야 하는지.
 
@@ -286,6 +322,14 @@ def main() -> int:
     result = subprocess.run(cmd, cwd=REPO_ROOT)
     if result.returncode != 0:
         fail(f"vpk upload 실패(exit {result.returncode})")
+
+    # vpk가 인덱스를 보고 올린 군더더기(Portable.zip 등)를 정리한다.
+    stale = unwanted_release_assets(
+        released_asset_names(tag), expected=[p.name for p in assets], channel=channel
+    )
+    for name in stale:
+        info(f"불필요한 에셋 제거: {name}")
+        subprocess.run(delete_asset_command(tag, name), cwd=REPO_ROOT)
 
     if should_apply_notes(release_existed=exists):
         info(f"릴리스 본문 설정: {notes_path}")

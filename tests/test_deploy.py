@@ -135,3 +135,38 @@ def test_same_version_redeploy_is_blocked() -> None:
 
     deploy.assert_version_is_new(prev_tag="v0.1.0", tag="v0.2.0")  # 통과한다
     deploy.assert_version_is_new(prev_tag=None, tag="v0.2.0")  # 첫 릴리스도 통과한다
+
+
+def test_unwanted_assets_are_scoped_to_this_channel() -> None:
+    # covers: Test-32
+    # 실측: vpk upload는 outputDir의 assets.<channel>.json 인덱스를 보고 올리므로, 우리가
+    # 고른 목록과 무관하게 Portable.zip까지 올라간다(Windows에는 --noPortable이 없다).
+    # 업로드 뒤 정리해야 하는데, 다른 플랫폼이 먼저 올려 둔 에셋은 건드리면 안 된다.
+    released = [
+        "NaverPostCrawler-0.1.1-full.nupkg",
+        "NaverPostCrawler-win-Setup.exe",
+        "NaverPostCrawler-win-Portable.zip",
+        "releases.win.json",
+        "NaverPostCrawler-0.1.1-osx-full.nupkg",
+        "NaverPostCrawler-osx-Setup.pkg",
+        "releases.osx.json",
+        "RELEASES",
+    ]
+    expected = [
+        "NaverPostCrawler-0.1.1-full.nupkg",
+        "NaverPostCrawler-win-Setup.exe",
+        "releases.win.json",
+    ]
+
+    unwanted = deploy.unwanted_release_assets(released, expected=expected, channel="win")
+
+    assert unwanted == ["NaverPostCrawler-win-Portable.zip"]
+
+
+def test_unwanted_assets_never_touch_the_other_platform() -> None:
+    # covers: Test-32
+    released = ["NaverPostCrawler-osx-Setup.pkg", "releases.osx.json", "RELEASES"]
+
+    unwanted = deploy.unwanted_release_assets(released, expected=[], channel="win")
+
+    assert unwanted == [], "osx 에셋과 레거시 인덱스는 win 실행이 지우면 안 된다"
