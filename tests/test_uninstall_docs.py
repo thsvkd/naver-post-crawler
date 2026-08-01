@@ -6,6 +6,8 @@ macOS에는 제거 훅이 없다. ``.pkg``는 언인스톨러를 만들지 않�
 
 경로는 빌드 설정(``scripts/build.py``의 조직 ID)에서 파생되므로, 문서에 박힌 값이 빌드와
 어긋나지 않는지 여기서 고정한다.
+
+``covers`` 태그의 번호는 ``docs/handoff-credential-storage.md``의 인수 기준이다.
 """
 
 from __future__ import annotations

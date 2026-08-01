@@ -5,6 +5,8 @@
 
 실제 보관소는 헤드리스/CI에서 잠겨 있거나 없으므로, 여기서는 가짜 백엔드를 주입해
 **우리 계층의 계약**만 검증한다. 실제 백엔드가 배포본에서 잡히는지는 E2E 실측 항목이다.
+
+``covers`` 태그의 번호는 ``docs/handoff-credential-storage.md``의 인수 기준이다.
 """
 
 from __future__ import annotations

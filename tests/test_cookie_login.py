@@ -286,6 +286,9 @@ def test_login_and_capture_passes_helper_env_to_runner(
 
 
 # -- 결과 파일의 노출 최소화 --------------------------------------------------
+# 주의: 여기부터의 covers 태그는 ``cred/`` 접두사로 docs/handoff-credential-storage.md
+# 의 번호임을 밝힌다. 이 파일에는 이미 두 개의 번호 체계가 섞여 있다(위 참고).
+#
 # 결과 파일에는 세션 쿠키가 평문으로 담긴다. 보관은 OS 자격증명 보관소로 옮겼지만
 # 이 취득 순간의 파일은 남아 있으므로, 권한과 수명을 좁히는 것이 유일한 방어다.
 
@@ -293,7 +296,7 @@ def test_login_and_capture_passes_helper_env_to_runner(
 def test_result_file_is_removed_as_soon_as_it_is_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: Test-6
+    # covers: cred/Test-6
     # 임시 디렉터리 정리에만 맡기면, 읽은 뒤 부모가 죽었을 때 평문 쿠키가 남는다.
     # Windows %TEMP%는 자동 정리가 사실상 없고 macOS는 재부팅 때만 정리한다.
     class _KeepDir:
@@ -330,7 +333,7 @@ def test_result_file_is_removed_as_soon_as_it_is_read(
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX 권한 비트가 없는 플랫폼")
 def test_helper_writes_the_result_file_owner_only(tmp_path: Path) -> None:
-    # covers: Test-6
+    # covers: cred/Test-6
     # write_text는 0644에서 umask를 뺀 권한으로 만든다. 세션 쿠키가 담기는 파일이므로
     # 디렉터리 권한에 기대지 않고 파일 자체를 소유자 전용으로 만든다.
     result = tmp_path / "cookies.json"

@@ -523,6 +523,10 @@ def test_output_dir_defaults_then_persists_across_restart(
 
 
 # -- 자격증명 보관소 실패와 이관 결과 안내 -----------------------------------
+# 주의: 여기부터의 covers 태그는 ``cred/`` 접두사를 붙여 docs/handoff-credential-storage.md
+# 의 인수 기준 번호임을 밝힌다. 이 파일 위쪽의 Test-3~27은 별개 핸드오프의 번호 체계라,
+# 접두사 없이 쓰면 같은 번호가 서로 다른 기준을 가리켜 추적이 불가능해진다.
+#
 # 저장 실패를 성공으로 표시하면 사용자는 백업이 왜 안 되는지 알 수 없고, 이관 실패를
 # 알리지 않으면 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다. 두 분기 모두
 # 화면 문구가 유일한 전달 수단이므로 여기서 고정한다.
@@ -535,7 +539,7 @@ def _raise_store_error(*_args: object, **_kwargs: object) -> None:
 def test_update_cookie_reports_store_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: Test-5
+    # covers: cred/Test-5
     gui = _bare_gui()
     status_calls: list[tuple[str, object]] = []
     monkeypatch.setattr(
@@ -552,7 +556,7 @@ def test_update_cookie_reports_store_failure(
 
 
 def test_run_cookie_login_reports_store_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: Test-5 (로그인은 됐는데 저장이 실패한 경우 — 성공으로 표시하면 안 된다)
+    # covers: cred/Test-5 (로그인은 됐는데 저장이 실패한 경우 — 성공으로 표시하면 안 된다)
     gui, _ = _bare_gui_with_run_thread_page()
     status_calls: list[tuple[str, object]] = []
     monkeypatch.setattr(
@@ -577,7 +581,7 @@ def _cookie_status_gui(monkeypatch: pytest.MonkeyPatch, migration: CookieMigrati
 
 
 def test_cookie_status_warns_after_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: Test-10
+    # covers: cred/Test-10
     gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
 
@@ -590,7 +594,7 @@ def test_cookie_status_warns_after_a_lost_migration(monkeypatch: pytest.MonkeyPa
 def test_cookie_status_stays_neutral_when_nothing_was_migrated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # covers: Test-10 (평문 파일이 없던 대부분의 실행에서 경고를 띄우면 안 된다)
+    # covers: cred/Test-10 (평문 파일이 없던 대부분의 실행에서 경고를 띄우면 안 된다)
     gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.NOTHING)
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
 
@@ -603,7 +607,7 @@ def test_cookie_status_stays_neutral_when_nothing_was_migrated(
 def test_cookie_status_drops_the_warning_once_a_cookie_is_stored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # covers: Test-10 (재로그인하면 안내가 저절로 사라져야 한다)
+    # covers: cred/Test-10 (재로그인하면 안내가 저절로 사라져야 한다)
     gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
 

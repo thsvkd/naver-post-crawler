@@ -5,6 +5,8 @@ v0.1.1까지는 세션 쿠키를 ``cafe_cookie.txt``에 평문으로 저장했�
 
 이관 시점이 '설치 시'가 아니라 '앱 시작 시'인 이유: OTA 업데이트는 새 설치가 아니어서
 설치 시점에만 걸면 기존 사용자 대부분이 누락된다.
+
+``covers`` 태그의 번호는 ``docs/handoff-credential-storage.md``의 인수 기준이다.
 """
 
 from __future__ import annotations
