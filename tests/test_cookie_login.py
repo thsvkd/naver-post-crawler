@@ -341,3 +341,31 @@ def test_helper_writes_the_result_file_owner_only(tmp_path: Path) -> None:
     cookie_login_mod._write_result(result, "captured", [("NID_AUT", "a", ".naver.com")])
 
     assert result.stat().st_mode & 0o777 == 0o600
+
+
+def test_result_write_failure_does_not_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-6
+    # 기록 실패가 예외로 새어 나가면 완료 플래그가 서지 않아 로그인 창이 닫히지 않고,
+    # 부모가 상한(약 5분 30초)까지 기다린 뒤에야 실패로 처리한다. 무증상 정지가 된다.
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("잠김")
+
+    monkeypatch.setattr(cookie_login_mod, "_write_result", boom)
+
+    cookie_login_mod._write_result_safely(tmp_path / "c.json", "captured", [])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 심볼릭 링크 동작")
+def test_result_file_refuses_to_follow_a_symlink(tmp_path: Path) -> None:
+    # covers: cred/Test-6
+    # 공격자가 결과 경로에 링크를 미리 놓아 두면 세션 쿠키가 그 대상에 쓰인다.
+    target = tmp_path / "attacker.json"
+    link = tmp_path / "cookies.json"
+    link.symlink_to(target)
+
+    with pytest.raises(OSError):
+        cookie_login_mod._write_result(link, "captured", [("NID_AUT", "a", ".naver.com")])
+
+    assert not target.exists(), "링크 대상에 자격증명이 쓰이면 안 된다"

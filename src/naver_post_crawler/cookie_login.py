@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -34,6 +35,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .cookie import format_cookie_header
+
+logger = logging.getLogger(__name__)
+
+# 결과 파일을 열 때 심볼릭 링크를 따라가지 않는다. 공격자가 미리 링크를 놓아 두면 세션
+# 쿠키가 그 링크 대상에 쓰인다. Windows에는 이 플래그가 없어 0(무효과)으로 떨어진다.
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # 부모가 헬퍼 모드로 재실행할 때 세우는 환경변수와 그 값. gui.main()이 이걸 보고 분기한다.
 # argv를 쓰지 않는 이유는 모듈 docstring 참고.
@@ -179,9 +186,23 @@ def _write_result(out_path: Path, status: str, triples: list[tuple[str, str, str
         },
         ensure_ascii=False,
     )
-    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fp:
         fp.write(payload)
+
+
+def _write_result_safely(out_path: Path, status: str, triples: list[tuple[str, str, str]]) -> None:
+    """:func:`_write_result`를 부르되 **실패해도 예외를 올리지 않는다**.
+
+    호출자는 이 뒤에 완료 플래그를 세우고 로그인 창을 닫는다. 여기서 예외가 나가면 그 둘이
+    실행되지 않아 창이 열린 채로 남고, 부모가 상한(약 5분 30초)까지 기다린 뒤에야 실패로
+    처리한다. 사용자에게는 아무 설명 없는 긴 정지로 보인다. 기록 실패 자체는 부모가 결과
+    파일 부재로 이미 감지하므로, 여기서는 조용히 넘기고 창을 닫는 쪽이 낫다.
+    """
+    try:
+        _write_result(out_path, status, triples)
+    except OSError:
+        logger.warning("헬퍼 결과 파일을 쓰지 못했습니다: %s", out_path, exc_info=True)
 
 
 def run_helper(result_path: str | None = None) -> int:
@@ -201,7 +222,7 @@ def run_helper(result_path: str | None = None) -> int:
     lock = threading.Lock()
 
     def write(status: str, triples: list[tuple[str, str, str]]) -> None:
-        _write_result(out_path, status, triples)
+        _write_result_safely(out_path, status, triples)
 
     window = webview.create_window(
         "네이버 로그인",

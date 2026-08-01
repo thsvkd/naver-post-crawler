@@ -100,7 +100,8 @@ def save(secret: str) -> None:
         raise CredentialStoreError(
             f"자격증명이 보관소 한도를 넘습니다({size} > {MAX_SECRET_BYTES} 바이트). "
             "브라우저에서 내보낸 쿠키 파일에 광고·추적 쿠키까지 함께 담겼을 때 생깁니다. "
-            "앱의 '네이버 로그인' 버튼을 쓰면 로그인 세션 쿠키만 수집하므로 한도를 넘지 않습니다."
+            "앱의 '네이버 로그인' 버튼은 빈 세션에서 로그인해 쿠키가 적으므로 보통 한도 안에 "
+            "들어갑니다."
         )
     try:
         _backend().set_password(SERVICE, ACCOUNT, secret)
