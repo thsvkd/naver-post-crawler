@@ -28,6 +28,7 @@ from .client import NaverBlogClient
 from .cookie import (
     CookieMigration,
     app_data_dir,
+    legacy_cookie_path,
     load_cookie,
     migrate_legacy_cookie,
     parse_cookie_file,
@@ -424,7 +425,15 @@ class CrawlerGUI:
         않으면 사용자는 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다. 새로 저장하면
         저장된 쿠키가 생기므로 이 안내는 저절로 사라진다.
         """
-        if load_cookie() is not None:
+        if self._migration is CookieMigration.EXPOSED and legacy_cookie_path().exists():
+            # 보관소로 옮겼든 아니든 평문이 디스크에 남아 있다. 이 작업의 목적이 그
+            # 노출 제거였으므로 저장 성공보다 먼저 알린다. 파일이 사라지면 저절로 걷힌다.
+            self._set_cookie_status(
+                f"이전 버전의 쿠키 파일을 지우지 못했습니다 — 직접 삭제해 주세요: "
+                f"{legacy_cookie_path()}",
+                ft.Colors.RED,
+            )
+        elif load_cookie() is not None:
             self._set_cookie_status("저장된 쿠키: 있음 ✓", ft.Colors.GREEN)
         elif self._migration is CookieMigration.LOST:
             self._set_cookie_status(

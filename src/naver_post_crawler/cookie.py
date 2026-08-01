@@ -210,6 +210,13 @@ class CookieMigration(StrEnum):
     LOST = "lost"
     """보관소에 넣지 못한 채 평문 파일을 지웠다 — 사용자는 다시 로그인해야 한다."""
 
+    EXPOSED = "exposed"
+    """평문 파일을 **지우지 못했다** — 자격증명이 아직 디스크에 그대로 있다.
+
+    보관소 처리가 성공했더라도 이 결과가 우선한다. 이 작업의 목적은 로그인 유지가 아니라
+    평문 노출 제거이고, 파일이 남았다면 그 목적이 달성되지 않은 것이다.
+    """
+
 
 def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
     """평문 쿠키 파일이 남아 있으면 보관소로 옮기고 **파일을 지운다**.
@@ -248,12 +255,18 @@ def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
                 credentials.save(cookie)
                 outcome = CookieMigration.MOVED
         except CredentialStoreError:
+            # 읽기가 실패한 경우에도 저장을 시도하지 않고 LOST로 끝낸다. 보관소가 비어
+            # 있었다면 살릴 수 있었을 쿠키를 잃지만, 읽지 못하는 보관소에 덮어썼다가
+            # 최신 값을 지우는 쪽이 더 나쁘다. 사용자에게는 LOST로 고지된다.
             logger.warning("평문 쿠키를 보관소로 옮기지 못했습니다", exc_info=True)
 
     try:
         path.unlink()
     except OSError:
+        # 평문이 그대로 남았다. 백신·인덱서·다른 인스턴스가 파일을 잡고 있으면 실제로
+        # 일어난다. 로그로만 남기면 이 시점에는 핸들러가 없어(창 모드는 stderr도 없다)
+        # 어디에도 보이지 않으므로, 결과에 실어 올려 호출자가 사용자에게 알리게 한다.
         logger.warning("평문 쿠키 파일을 지우지 못했습니다: %s", path, exc_info=True)
-    else:
-        logger.info("평문 쿠키 파일을 정리했습니다(%s).", outcome.value)
+        return CookieMigration.EXPOSED
+    logger.info("평문 쿠키 파일을 정리했습니다(%s).", outcome.value)
     return outcome

@@ -614,3 +614,51 @@ def test_cookie_status_drops_the_warning_once_a_cookie_is_stored(
     gui._refresh_cookie_status()
 
     assert calls[-1][1] == ft.Colors.GREEN
+
+
+def test_build_runs_the_legacy_cookie_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: cred/Test-8
+    # 이관 호출부를 gui.main()에서 _build()로 옮겼다. "여전히 불리는가"를 고정하지 않으면
+    # 이 변경의 존재 이유를 지워도 스위트가 통과한다(실제로 뮤테이션이 생존했다).
+    calls: list[int] = []
+
+    def fake() -> CookieMigration:
+        calls.append(1)
+        return CookieMigration.NOTHING
+
+    monkeypatch.setattr(gui_mod, "migrate_legacy_cookie", fake)
+
+    gui = _bare_gui_with_build()
+
+    assert calls == [1], "창을 만들 때 이관을 정확히 한 번 실행해야 한다"
+    assert gui._migration is CookieMigration.NOTHING, "결과를 보관해야 화면에 반영할 수 있다"
+
+
+def test_cookie_status_warns_about_a_leftover_plaintext_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-9
+    # 평문을 지우지 못하면 보관소 저장이 성공했더라도 자격증명이 디스크에 남는다.
+    # 저장 성공 문구가 이 사실을 가리면 안 된다.
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path))
+    (tmp_path / gui_mod.legacy_cookie_path().name).write_text("NID_AUT=a", encoding="utf-8")
+    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.EXPOSED)
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
+
+    gui._refresh_cookie_status()
+
+    assert calls[-1][1] == ft.Colors.RED
+    assert "직접 삭제" in calls[-1][0]
+
+
+def test_leftover_warning_clears_once_the_file_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-9 (사용자가 직접 지우면 경고가 저절로 걷혀야 한다)
+    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path))
+    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.EXPOSED)
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
+
+    gui._refresh_cookie_status()
+
+    assert calls[-1][1] == ft.Colors.GREEN

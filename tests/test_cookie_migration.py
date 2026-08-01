@@ -174,3 +174,23 @@ def test_unreadable_store_does_not_get_overwritten_by_the_legacy_value(
     assert backend.store[(credentials.SERVICE, credentials.ACCOUNT)] == "NID_AUT=new"
     assert outcome is cookie_mod.CookieMigration.LOST
     assert not path.exists(), "읽지 못했더라도 평문은 지운다(D-3)"
+
+
+def test_unlink_failure_is_reported_as_exposed(
+    storage: Path, fake: FakeKeyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-9
+    # 백신·인덱서·다른 인스턴스가 파일을 잡고 있으면 실제로 일어난다. 보관소 저장이
+    # 성공했다는 이유로 MOVED를 보고하면, 이 작업이 없애려던 평문이 조용히 남는다.
+    path = _write_legacy(storage, "NID_AUT=a")
+
+    def boom(self: Path, **_kwargs: object) -> None:
+        raise PermissionError("파일이 사용 중입니다")
+
+    monkeypatch.setattr(Path, "unlink", boom)
+
+    outcome = cookie_mod.migrate_legacy_cookie()
+
+    assert outcome is cookie_mod.CookieMigration.EXPOSED
+    assert path.exists(), "지우지 못했다는 전제를 세운 테스트다"
+    assert credentials.load() == "NID_AUT=a", "보관소 저장 자체는 성공했어도 EXPOSED가 우선한다"

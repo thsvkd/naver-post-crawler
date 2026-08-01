@@ -84,3 +84,54 @@ def test_since_after_until_raises_usage_error() -> None:
     result = runner.invoke(main, ["--since", "2023-12-31", "--until", "2023-01-01", "target"])
     assert result.exit_code != 0
     assert "--since가 --until보다" in result.output
+
+
+# -- 평문 쿠키 이관 배선 ------------------------------------------------------
+# 이 변경의 존재 이유는 평문 파일을 없애는 것이다. 결과를 받은 뒤의 분기만 검증하고
+# **호출 자체**를 검증하지 않으면, 이관을 통째로 지워도 스위트가 초록색으로 남는다.
+# covers 태그의 번호는 docs/handoff-credential-storage.md의 인수 기준이다.
+
+
+def _spy_migration(monkeypatch: pytest.MonkeyPatch, outcome: cli_mod.CookieMigration) -> list[int]:
+    calls: list[int] = []
+
+    def fake() -> cli_mod.CookieMigration:
+        calls.append(1)
+        return outcome
+
+    monkeypatch.setattr(cli_mod, "migrate_legacy_cookie", fake)
+    monkeypatch.setattr(cli_mod, "_check_update", lambda: None)
+    return calls
+
+
+def test_cli_runs_the_legacy_cookie_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: cred/Test-8
+    calls = _spy_migration(monkeypatch, cli_mod.CookieMigration.NOTHING)
+
+    result = CliRunner().invoke(main, ["--check-update"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [1], "CLI 시작 시 이관을 정확히 한 번 실행해야 한다"
+
+
+def test_cli_reports_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: cred/Test-10
+    _spy_migration(monkeypatch, cli_mod.CookieMigration.LOST)
+
+    result = CliRunner().invoke(main, ["--check-update"])
+
+    # rich가 폭에 맞춰 줄을 접으므로 공백을 지우고 비교한다.
+    assert "네이버로그인" in "".join(result.output.split()), (
+        "쿠키를 잃었으면 무엇을 해야 하는지 알려야 한다"
+    )
+
+
+def test_cli_reports_a_leftover_plaintext_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: cred/Test-9 (지우지 못했으면 평문이 그대로 남아 있다 — 조용히 넘기면 안 된다)
+    _spy_migration(monkeypatch, cli_mod.CookieMigration.EXPOSED)
+
+    result = CliRunner().invoke(main, ["--check-update"])
+
+    compact = "".join(result.output.split())
+    assert "직접삭제해주세요" in compact
+    assert "cafe_cookie.txt" in compact, "어느 파일을 지워야 하는지 알려야 한다"
