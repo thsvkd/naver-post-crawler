@@ -192,7 +192,10 @@ def test_app_data_dir_never_uses_bundle_adjacent_storage_on_macos(
     monkeypatch.setattr(sys, "platform", "darwin")
     home = tmp_path / "home"
     home.mkdir()
+    # Path.home()은 POSIX에서 HOME을, Windows에서 USERPROFILE을 본다. sys.platform만
+    # darwin으로 바꾼 채 HOME만 세우면 Windows에서는 진짜 홈을 가리켜 이 테스트가 깨진다.
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
     result = app_data_dir()
 
