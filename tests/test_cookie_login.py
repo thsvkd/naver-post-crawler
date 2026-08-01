@@ -283,3 +283,58 @@ def test_login_and_capture_passes_helper_env_to_runner(
     assert all(_LEGACY_HELPER_FLAG not in part for part in cmd)
     # 결과 경로는 argv가 아니라 환경변수에만 있다.
     assert all(env[_const(_HELPER_RESULT_ENV)] not in part for part in cmd)
+
+
+# -- 결과 파일의 노출 최소화 --------------------------------------------------
+# 결과 파일에는 세션 쿠키가 평문으로 담긴다. 보관은 OS 자격증명 보관소로 옮겼지만
+# 이 취득 순간의 파일은 남아 있으므로, 권한과 수명을 좁히는 것이 유일한 방어다.
+
+
+def test_result_file_is_removed_as_soon_as_it_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-6
+    # 임시 디렉터리 정리에만 맡기면, 읽은 뒤 부모가 죽었을 때 평문 쿠키가 남는다.
+    # Windows %TEMP%는 자동 정리가 사실상 없고 macOS는 재부팅 때만 정리한다.
+    class _KeepDir:
+        """정리하지 않는 TemporaryDirectory 대역 — 명시적 삭제 여부를 관찰하려면 필요하다."""
+
+        def __enter__(self) -> str:
+            return str(tmp_path)
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(cookie_login_mod.tempfile, "TemporaryDirectory", lambda: _KeepDir())
+    seen: list[Path] = []
+
+    def fake_runner(_cmd: list[str], **kwargs: object) -> object:
+        path = _helper_result_path(kwargs)
+        seen.append(path)
+        path.write_text(
+            json.dumps(
+                {
+                    "status": "captured",
+                    "cookies": [{"name": "NID_AUT", "value": "a", "domain": ".naver.com"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    assert login_and_capture(runner=fake_runner) == "NID_AUT=a"
+
+    assert seen, "헬퍼 대역이 결과 경로를 받지 못했다"
+    assert not seen[0].exists(), "결과 파일을 읽은 즉시 지워야 한다"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX 권한 비트가 없는 플랫폼")
+def test_helper_writes_the_result_file_owner_only(tmp_path: Path) -> None:
+    # covers: Test-6
+    # write_text는 0644에서 umask를 뺀 권한으로 만든다. 세션 쿠키가 담기는 파일이므로
+    # 디렉터리 권한에 기대지 않고 파일 자체를 소유자 전용으로 만든다.
+    result = tmp_path / "cookies.json"
+
+    cookie_login_mod._write_result(result, "captured", [("NID_AUT", "a", ".naver.com")])
+
+    assert result.stat().st_mode & 0o777 == 0o600

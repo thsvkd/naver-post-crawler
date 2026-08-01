@@ -155,7 +155,33 @@ def login_and_capture(runner: Callable[..., object] = subprocess.run) -> str | N
             output = result_path.read_text(encoding="utf-8")
         except OSError:
             output = ""
+        finally:
+            # 읽자마자 지운다. 디렉터리 정리(컨텍스트 종료)에만 맡기면, 그 사이에 부모가
+            # 죽었을 때 세션 쿠키가 평문으로 임시 디렉터리에 남는다. Windows %TEMP%는
+            # 자동 정리가 사실상 없고 macOS는 재부팅 때만 정리한다.
+            with contextlib.suppress(OSError):
+                result_path.unlink()
     return parse_helper_output(proc.returncode, output)  # type: ignore[attr-defined]
+
+
+def _write_result(out_path: Path, status: str, triples: list[tuple[str, str, str]]) -> None:
+    """헬퍼 결과 JSON을 **소유자 전용 권한으로** 쓴다.
+
+    이 파일에는 세션 쿠키가 평문으로 담긴다. ``write_text``는 0644에서 umask를 뺀 권한으로
+    만들므로 같은 기기의 다른 사용자에게 열려 있을 수 있다. 부모가 만든 임시 디렉터리가
+    0700이라 지금은 가려지지만, 디렉터리 권한에 기대지 않고 파일 자체를 좁힌다.
+    ``O_EXCL``은 같은 경로가 미리 놓여 있을 때 그것을 덮어쓰지 않게 한다.
+    """
+    payload = json.dumps(
+        {
+            "status": status,
+            "cookies": [{"name": n, "value": v, "domain": d} for n, v, d in triples],
+        },
+        ensure_ascii=False,
+    )
+    fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fp:
+        fp.write(payload)
 
 
 def run_helper(result_path: str | None = None) -> int:
@@ -175,16 +201,7 @@ def run_helper(result_path: str | None = None) -> int:
     lock = threading.Lock()
 
     def write(status: str, triples: list[tuple[str, str, str]]) -> None:
-        out_path.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "cookies": [{"name": n, "value": v, "domain": d} for n, v, d in triples],
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+        _write_result(out_path, status, triples)
 
     window = webview.create_window(
         "네이버 로그인",
