@@ -168,6 +168,46 @@ output/
 
 ---
 
+## 제거하기
+
+네이버 로그인 정보는 파일이 아니라 **OS 자격증명 보관소**(macOS 키체인 / Windows 자격 증명 관리자)에 들어 있습니다.
+앱을 지워도 설정과 로그는 남는데, 이는 두 OS 모두에서 정상 동작입니다(다시 설치하면 설정이 그대로 살아납니다).
+아래는 그것까지 남김없이 지우는 방법입니다.
+
+### Windows
+
+**설정 → 앱 → 설치된 앱**에서 `NaverPostCrawler`를 제거합니다.
+저장된 네이버 로그인 정보는 이 과정에서 **함께 지워집니다.**
+
+설정과 로그까지 지우려면 이 폴더를 삭제하십시오.
+
+```
+%APPDATA%\Your Company\Naver Blog Backup
+```
+
+> [!WARNING]
+> 상위 폴더인 `Your Company`는 다른 앱도 함께 쓰므로 지우지 마십시오.
+
+### macOS
+
+응용 프로그램 폴더에서 **Naver Blog Backup.app**을 휴지통으로 옮깁니다.
+
+macOS에는 제거 프로그램이 끼어들 지점이 없어(`.pkg`는 언인스톨러를 만들지 않습니다),
+다음 세 가지는 **자동으로 지워지지 않습니다.** 완전히 지우려면 직접 실행하십시오.
+
+```bash
+# 1. 설정·로그
+rm -rf ~/Library/Application\ Support/com.thsvkd.naver-post-crawler
+
+# 2. 저장된 네이버 로그인 정보
+security delete-generic-password -s naver-post-crawler -a cafe-cookie
+
+# 3. 설치 기록(영수증). 응용 프로그램 폴더에 설치했다면 sudo가 필요합니다.
+pkgutil --volume ~ --forget com.thsvkd.naver-post-crawler
+```
+
+2번은 **키체인 접근**.app에서 `naver-post-crawler`를 검색해 지워도 됩니다.
+
 ## 자주 묻는 질문
 
 <details>
