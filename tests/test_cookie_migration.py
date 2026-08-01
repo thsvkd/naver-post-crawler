@@ -17,7 +17,7 @@ from naver_post_crawler import cookie as cookie_mod
 from naver_post_crawler import credentials
 from naver_post_crawler.errors import CredentialStoreError
 
-from .test_credentials import BrokenKeyring, FakeKeyring
+from .test_credentials import BrokenKeyring, FakeKeyring, ReadFailsKeyring
 
 
 @pytest.fixture
@@ -108,3 +108,67 @@ def test_save_cookie_propagates_store_failure(
 
     with pytest.raises(CredentialStoreError):
         cookie_mod.save_cookie("NID_AUT=a")
+
+
+# -- 이관 결과 보고 -----------------------------------------------------------
+# 이관은 로깅이 설정되기 전에 돈다. 결과를 돌려주지 않으면 실패가 로그에도 화면에도
+# 남지 않아, 사용자는 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다.
+
+
+def test_migration_reports_moved(storage: Path, fake: FakeKeyring) -> None:
+    # covers: Test-8
+    _write_legacy(storage, "NID_AUT=a")
+
+    assert cookie_mod.migrate_legacy_cookie() is cookie_mod.CookieMigration.MOVED
+
+
+def test_migration_reports_nothing_without_a_legacy_file(storage: Path, fake: FakeKeyring) -> None:
+    # covers: Test-11
+    assert cookie_mod.migrate_legacy_cookie() is cookie_mod.CookieMigration.NOTHING
+
+
+def test_migration_reports_kept_when_the_store_already_has_a_value(
+    storage: Path, fake: FakeKeyring
+) -> None:
+    # covers: Test-12
+    credentials.save("NID_AUT=new")
+    _write_legacy(storage, "NID_AUT=old")
+
+    assert cookie_mod.migrate_legacy_cookie() is cookie_mod.CookieMigration.KEPT
+
+
+def test_migration_reports_lost_when_the_store_write_fails(
+    storage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-10 (D-3의 대가를 사용자에게 알릴 수 있어야 한다)
+    monkeypatch.setattr(credentials, "_backend_cache", BrokenKeyring())
+    _write_legacy(storage, "NID_AUT=a")
+
+    assert cookie_mod.migrate_legacy_cookie() is cookie_mod.CookieMigration.LOST
+
+
+def test_empty_legacy_file_is_not_reported_as_a_loss(storage: Path, fake: FakeKeyring) -> None:
+    # covers: Test-11
+    # 옛 빈 파일 하나 때문에 "다시 로그인하라"는 잘못된 안내가 나가면 안 된다.
+    path = _write_legacy(storage, "   \n")
+
+    assert cookie_mod.migrate_legacy_cookie() is cookie_mod.CookieMigration.NOTHING
+    assert not path.exists()
+
+
+def test_unreadable_store_does_not_get_overwritten_by_the_legacy_value(
+    storage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-12
+    # 읽기는 거부되고 쓰기는 되는 상태(서명 신원이 바뀐 macOS)에서, 읽기 실패를 "값 없음"
+    # 으로 오해하면 최신 쿠키를 옛 평문으로 덮어쓴다. Test-12가 지키려는 불변식이다.
+    backend = ReadFailsKeyring()
+    backend.store[(credentials.SERVICE, credentials.ACCOUNT)] = "NID_AUT=new"
+    monkeypatch.setattr(credentials, "_backend_cache", backend)
+    path = _write_legacy(storage, "NID_AUT=old")
+
+    outcome = cookie_mod.migrate_legacy_cookie()
+
+    assert backend.store[(credentials.SERVICE, credentials.ACCOUNT)] == "NID_AUT=new"
+    assert outcome is cookie_mod.CookieMigration.LOST
+    assert not path.exists(), "읽지 못했더라도 평문은 지운다(D-3)"

@@ -191,3 +191,57 @@ def test_size_limit_counts_utf16_bytes_not_characters(fake: FakeKeyring) -> None
     # 한글도 BMP라 UTF-16에서 2바이트다. 문자 수로 세면 한도를 잘못 계산한다.
     assert credentials.secret_size_bytes("가나다") == 6
     assert credentials.secret_size_bytes("abc") == 6
+
+
+class ReadFailsKeyring(FakeKeyring):
+    """읽기만 거부하는 보관소.
+
+    macOS에서 서명 신원이 바뀌면 기존 항목 읽기가 거부되면서 쓰기는 되는 상태가 나온다.
+    이 조합이 "저장된 값 없음"과 구분되지 않으면 이관이 최신 값을 옛 평문으로 덮어쓴다.
+    """
+
+    def get_password(self, service: str, username: str) -> str | None:
+        raise keyring.errors.KeyringError("읽기 거부")
+
+
+def test_load_strict_raises_when_the_store_cannot_be_read(broken: None) -> None:
+    # covers: Test-5 (호출자가 '값 없음'과 '읽지 못함'을 구분할 수 있어야 한다)
+    with pytest.raises(CredentialStoreError):
+        credentials.load_strict()
+
+
+def test_load_strict_returns_none_when_nothing_is_stored(fake: FakeKeyring) -> None:
+    # covers: Test-2
+    assert credentials.load_strict() is None
+
+
+def test_unreadable_store_is_logged_at_warning(
+    broken: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    # covers: Test-5
+    # DEBUG로 두면 기본 레벨(INFO)에서 사라져, 키체인 접근 거부가 어디에도 흔적을 남기지
+    # 않는다. 사용자에게는 "저장된 쿠키: 없음"으로만 보이므로 로그가 유일한 단서다.
+    with caplog.at_level("WARNING", logger="naver_post_crawler.credentials"):
+        assert credentials.load() is None
+
+    assert caplog.records, "읽기 실패가 WARNING 이상으로 남아야 한다"
+
+
+def test_save_failure_message_warns_that_the_previous_value_may_be_gone(broken: None) -> None:
+    # covers: Test-5
+    # macOS 백엔드는 지우고 다시 추가한다(실측: keyring 25.7.0 backends/macOS/api.py).
+    # 추가 단계에서 실패하면 이전 쿠키도 이미 사라진 상태라, "실패했으니 예전 것은 남았겠지"
+    # 라는 오해를 문구가 막아야 한다.
+    with pytest.raises(CredentialStoreError) as excinfo:
+        credentials.save("NID_AUT=a")
+
+    assert "다시 로그인" in str(excinfo.value)
+
+
+def test_oversized_secret_error_names_an_in_app_remedy(fake: FakeKeyring) -> None:
+    # covers: Test-7
+    # 한도 초과를 알리기만 하고 방법을 주지 않으면 사용자는 앱 안에서 할 수 있는 일이 없다.
+    with pytest.raises(CredentialStoreError) as excinfo:
+        credentials.save("x" * (credentials.MAX_SECRET_BYTES // 2 + 1))
+
+    assert "네이버 로그인" in str(excinfo.value)

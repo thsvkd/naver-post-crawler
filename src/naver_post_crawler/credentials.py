@@ -34,9 +34,15 @@ ACCOUNT = "cafe-cookie"
 # 한쪽에서만 저장되는 상황을 만들지 않고, 한도 초과를 개발 중에 드러내기 위해서다.
 MAX_SECRET_BYTES = 2560
 
-# keyring의 Windows 백엔드가 실제로 만드는 대상 이름. 기본 대상은 서비스 이름이고,
-# 같은 서비스에 다른 계정이 있으면 ``계정@서비스`` 복합 이름도 함께 쓴다.
-# 제거 훅이 둘 다 지워야 한다(대응이 어긋나면 훅은 조용히 아무것도 못 지운다).
+# keyring의 Windows 백엔드가 실제로 만드는 대상 이름.
+#
+# 기본 대상은 서비스 이름이다. 그리고 ``set_password``는 저장 전에 기존 항목을 계정으로
+# 거르지 않고 읽어, 있으면 그 값을 ``계정@서비스`` 복합 이름으로 **복사해 둔다**. 즉 같은
+# 계정으로 두 번째 저장을 하는 순간부터 복합 항목에 직전 세션 쿠키가 남는다(실측:
+# keyring 25.7.0 ``backends/Windows.py``의 set_password).
+#
+# 그래서 지울 때는 반드시 둘 다 지워야 한다. 하나라도 빠지면 제거 후에도 이전 세션
+# 자격증명이 자격 증명 관리자에 남는다.
 WINDOWS_TARGETS = (SERVICE, f"{ACCOUNT}@{SERVICE}")
 
 _backend_cache = None
@@ -55,7 +61,13 @@ def platform_backend():
     if sys.platform == "win32":
         from keyring.backends import Windows
 
-        return Windows.WinVaultKeyring()
+        backend = Windows.WinVaultKeyring()
+        # keyring 기본값은 CRED_PERSIST_ENTERPRISE다. 그 값은 자격증명을 **로밍 사용자
+        # 프로필에 포함**시켜, 도메인 환경(회사 관리 PC)에서 프로필과 함께 다른 기기로
+        # 복제된다. 개인 네이버 세션을 회사 프로필 저장소로 퍼뜨리지 않도록 이 기기로
+        # 한정한다. 문자열은 keyring이 CRED_PERSIST_LOCAL_MACHINE으로 변환한다.
+        backend.persist = "local machine"
+        return backend
     from keyring.backends import SecretService
 
     return SecretService.Keyring()
@@ -87,27 +99,53 @@ def save(secret: str) -> None:
     if size > MAX_SECRET_BYTES:
         raise CredentialStoreError(
             f"자격증명이 보관소 한도를 넘습니다({size} > {MAX_SECRET_BYTES} 바이트). "
-            "쿠키 수가 너무 많습니다."
+            "브라우저에서 내보낸 쿠키 파일에 광고·추적 쿠키까지 함께 담겼을 때 생깁니다. "
+            "앱의 '네이버 로그인' 버튼을 쓰면 로그인 세션 쿠키만 수집하므로 한도를 넘지 않습니다."
         )
     try:
         _backend().set_password(SERVICE, ACCOUNT, secret)
     except Exception as exc:  # noqa: BLE001 - 백엔드마다 예외 종류가 다르다.
-        raise CredentialStoreError(f"자격증명을 보관소에 저장하지 못했습니다: {exc}") from exc
+        # macOS 백엔드는 기존 항목을 지운 뒤 새로 추가한다(실측: keyring 25.7.0
+        # backends/macOS/api.py의 set_generic_password). 추가 단계에서 실패하면 이전
+        # 자격증명도 이미 사라진 상태이므로, "실패했으니 예전 것은 남아 있겠지"라는
+        # 오해가 생기지 않도록 문구로 알린다.
+        raise CredentialStoreError(
+            f"자격증명을 보관소에 저장하지 못했습니다: {exc} "
+            "(이전에 저장된 쿠키도 사라졌을 수 있습니다. 다시 로그인해 주세요.)"
+        ) from exc
+
+
+def load_strict() -> str | None:
+    """보관된 자격증명. **읽기 실패는 예외로 올린다.**
+
+    "저장된 값이 없다"와 "읽지 못했다"를 구분해야 하는 호출자를 위한 형태다. 둘을 뭉뚱그리면
+    이관 로직이 읽기 실패를 "저장된 값 없음"으로 오해해 최신 값을 옛 평문으로 덮어쓴다.
+
+    Raises:
+        CredentialStoreError: 보관소에 접근하지 못했을 때.
+    """
+    try:
+        secret = _backend().get_password(SERVICE, ACCOUNT)
+    except Exception as exc:  # noqa: BLE001
+        raise CredentialStoreError(f"자격증명 보관소를 읽지 못했습니다: {exc}") from exc
+    # 빈 문자열도 미저장으로 취급한다 — 그러지 않으면 GUI가 "저장된 쿠키: 있음"으로
+    # 잘못 표시한다.
+    return secret or None
 
 
 def load() -> str | None:
     """보관된 자격증명(없거나 읽지 못하면 ``None``).
 
     **예외를 올리지 않는다.** 사용자가 키체인 접근을 거부해도 앱은 "로그인 필요" 상태로
-    계속 동작해야 한다. 빈 문자열도 미저장으로 취급한다 — 그러지 않으면 GUI가 "저장된
-    쿠키: 있음"으로 잘못 표시한다.
+    계속 동작해야 한다.
     """
     try:
-        secret = _backend().get_password(SERVICE, ACCOUNT)
-    except Exception:  # noqa: BLE001
-        logger.debug("자격증명 보관소를 읽지 못했습니다", exc_info=True)
+        return load_strict()
+    except CredentialStoreError:
+        # DEBUG로 두면 기본 레벨(INFO)에서 사라져 접근 거부가 어디에도 흔적을 남기지
+        # 않는다. 사용자에게는 "저장된 쿠키: 없음"으로만 보이므로 로그가 유일한 단서다.
+        logger.warning("자격증명 보관소를 읽지 못했습니다", exc_info=True)
         return None
-    return secret or None
 
 
 def delete() -> None:

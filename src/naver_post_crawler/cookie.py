@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+from enum import StrEnum
 from pathlib import Path
 
 from . import credentials
@@ -190,12 +191,27 @@ def load_cookie() -> str | None:
     return credentials.load()
 
 
-def delete_cookie() -> None:
-    """보관된 쿠키를 지운다(없어도 조용히 넘어간다)."""
-    credentials.delete()
+class CookieMigration(StrEnum):
+    """:func:`migrate_legacy_cookie`의 결과.
+
+    호출자가 사용자에게 알릴 수 있어야 한다. 이관은 로깅이 설정되기 전에 실행되므로
+    (앱 시작 직후), 실패를 로그에만 남기면 사용자도 지원자도 흔적을 볼 수 없다.
+    """
+
+    NOTHING = "nothing"
+    """옮길 평문 파일이 없었다(대부분의 실행)."""
+
+    MOVED = "moved"
+    """평문 쿠키를 보관소로 옮기고 파일을 지웠다."""
+
+    KEPT = "kept"
+    """보관소에 이미 값이 있어 덮어쓰지 않고 평문 파일만 지웠다."""
+
+    LOST = "lost"
+    """보관소에 넣지 못한 채 평문 파일을 지웠다 — 사용자는 다시 로그인해야 한다."""
 
 
-def migrate_legacy_cookie(directory: Path | None = None) -> None:
+def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
     """평문 쿠키 파일이 남아 있으면 보관소로 옮기고 **파일을 지운다**.
 
     앱이 시작할 때 부른다. 설치 시점이 아니라 시작 시점인 이유는 OTA 업데이트가 새 설치가
@@ -204,25 +220,40 @@ def migrate_legacy_cookie(directory: Path | None = None) -> None:
     보관소 기록이 실패해도 평문 파일은 지운다. 자격증명 노출을 없애는 것이 이 작업의
     목적이고, 세션 쿠키는 재로그인으로 다시 얻을 수 있는 값이다(핸드오프 D-3).
     어떤 실패도 밖으로 내보내지 않는다 — 이관 때문에 앱이 시작하지 못하면 안 된다.
+    대신 결과를 :class:`CookieMigration`으로 돌려 호출자가 사용자에게 알리게 한다.
     """
     path = legacy_cookie_path(directory)
     if not path.exists():
-        return
+        return CookieMigration.NOTHING
     try:
         cookie = path.read_text(encoding="utf-8").strip()
     except OSError:
-        logger.debug("평문 쿠키 파일을 읽지 못했습니다", exc_info=True)
+        # 읽지 못한 파일도 지운다(D-3). 안에 세션이 들어 있었을 수 있으므로 손실로 본다.
+        logger.warning("평문 쿠키 파일을 읽지 못했습니다", exc_info=True)
         cookie = ""
-    # 이미 보관소에 값이 있으면 덮어쓰지 않는다 — 새 로그인으로 얻은 최신 쿠키를
-    # 옛 파일이 되돌리면 안 된다.
-    if cookie and credentials.load() is None:
+        outcome = CookieMigration.LOST
+    else:
+        # 빈 파일은 잃을 것이 없다. 여기서 NOTHING으로 두지 않으면 옛 빈 파일 하나 때문에
+        # 사용자에게 "다시 로그인하라"는 잘못된 안내가 나간다.
+        outcome = CookieMigration.NOTHING if not cookie else CookieMigration.LOST
+
+    if cookie:
         try:
-            credentials.save(cookie)
+            # 이미 보관소에 값이 있으면 덮어쓰지 않는다 — 새 로그인으로 얻은 최신 쿠키를
+            # 옛 파일이 되돌리면 안 된다. 읽기 실패를 "값 없음"으로 오해하면 바로 그 일이
+            # 벌어지므로, 삼키는 load()가 아니라 예외를 올리는 load_strict()를 쓴다.
+            if credentials.load_strict() is not None:
+                outcome = CookieMigration.KEPT
+            else:
+                credentials.save(cookie)
+                outcome = CookieMigration.MOVED
         except CredentialStoreError:
-            logger.warning("평문 쿠키를 보관소로 옮기지 못했습니다. 다시 로그인해 주세요.")
+            logger.warning("평문 쿠키를 보관소로 옮기지 못했습니다", exc_info=True)
+
     try:
         path.unlink()
     except OSError:
         logger.warning("평문 쿠키 파일을 지우지 못했습니다: %s", path, exc_info=True)
     else:
-        logger.info("평문 쿠키 파일을 OS 보관소로 옮기고 삭제했습니다.")
+        logger.info("평문 쿠키 파일을 정리했습니다(%s).", outcome.value)
+    return outcome

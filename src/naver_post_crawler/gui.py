@@ -26,6 +26,7 @@ from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
 from .cookie import (
+    CookieMigration,
     app_data_dir,
     load_cookie,
     migrate_legacy_cookie,
@@ -326,6 +327,11 @@ class CrawlerGUI:
             )
         )
         self._refresh_failures()
+        # v0.1.1까지 쓰던 평문 쿠키 파일을 OS 보관소로 옮기고 지운다. 앱 시작 시점에 하되
+        # (OTA 업데이트는 새 설치가 아니라 설치 훅으로는 기존 사용자를 놓친다, 핸드오프
+        # D-6) **화면을 만들 수 있는 여기서** 한다. main()에서 하면 이관은 로깅 설정보다
+        # 앞서 실행되어, 실패해도 로그에도 화면에도 아무 흔적이 남지 않는다.
+        self._migration = migrate_legacy_cookie()
         self._refresh_cookie_status()
 
     # -- 이벤트 ----------------------------------------------------------
@@ -412,9 +418,19 @@ class CrawlerGUI:
             self._cookie_login_busy = False
 
     def _refresh_cookie_status(self) -> None:
-        """저장된 쿠키 유무를 상태 텍스트에 반영한다."""
+        """저장된 쿠키 유무를 상태 텍스트에 반영한다.
+
+        이관 중 쿠키를 잃었다면(:attr:`CookieMigration.LOST`) 그 사실을 알린다. 알리지
+        않으면 사용자는 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다. 새로 저장하면
+        저장된 쿠키가 생기므로 이 안내는 저절로 사라진다.
+        """
         if load_cookie() is not None:
             self._set_cookie_status("저장된 쿠키: 있음 ✓", ft.Colors.GREEN)
+        elif self._migration is CookieMigration.LOST:
+            self._set_cookie_status(
+                "이전 버전에 저장된 쿠키를 옮기지 못했습니다 — '네이버 로그인'을 다시 해 주세요.",
+                ft.Colors.RED,
+            )
         else:
             self._set_cookie_status("저장된 쿠키: 없음", self._muted_color)
 
@@ -866,10 +882,9 @@ def main() -> None:
     """
     if is_helper_mode():
         raise SystemExit(run_helper())
-    # v0.1.1까지 쓰던 평문 쿠키 파일이 남아 있으면 OS 보관소로 옮기고 지운다. 설치 시점이
-    # 아니라 여기서 하는 이유는 OTA 업데이트가 새 설치가 아니기 때문이다(핸드오프 D-6).
-    # 헬퍼 모드보다 뒤에 두어 로그인 창을 띄우는 자식 프로세스가 중복 실행하지 않게 한다.
-    migrate_legacy_cookie()
+    # 평문 쿠키 이관은 CrawlerGUI.__init__에서 한다 — 결과를 사용자에게 보여줘야 하므로
+    # 화면을 만들 수 있는 곳이어야 한다. 헬퍼 모드는 위에서 이미 갈라져 나가므로 로그인
+    # 창을 띄우는 자식 프로세스가 이관을 중복 실행하지 않는다.
     ft.run(_view)
 
 

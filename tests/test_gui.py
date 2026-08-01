@@ -18,7 +18,8 @@ import pytest
 
 import naver_post_crawler.cookie_login as cookie_login_mod
 import naver_post_crawler.gui as gui_mod
-from naver_post_crawler.cookie import app_data_dir
+from naver_post_crawler.cookie import CookieMigration, app_data_dir
+from naver_post_crawler.errors import CredentialStoreError
 from naver_post_crawler.gui import CrawlerGUI, _first_picked_path
 
 
@@ -519,3 +520,93 @@ def test_output_dir_defaults_then_persists_across_restart(
     # 앱을 다시 연다 — 직전 선택이 복원돼야 한다.
     second = _bare_gui_with_build()
     assert second.out_field.value == picked
+
+
+# -- 자격증명 보관소 실패와 이관 결과 안내 -----------------------------------
+# 저장 실패를 성공으로 표시하면 사용자는 백업이 왜 안 되는지 알 수 없고, 이관 실패를
+# 알리지 않으면 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다. 두 분기 모두
+# 화면 문구가 유일한 전달 수단이므로 여기서 고정한다.
+
+
+def _raise_store_error(*_args: object, **_kwargs: object) -> None:
+    raise CredentialStoreError("보관소 접근 거부")
+
+
+def test_update_cookie_reports_store_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: Test-5
+    gui = _bare_gui()
+    status_calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        gui, "_set_cookie_status", lambda msg, color: status_calls.append((msg, color))
+    )
+    monkeypatch.setattr(gui_mod, "parse_cookie_file", lambda _p: "NID_AUT=a")
+    monkeypatch.setattr(gui_mod, "save_cookie", _raise_store_error)
+
+    gui._update_cookie(tmp_path / "cookies.txt")
+
+    assert status_calls, "저장 실패를 알려야 한다"
+    assert status_calls[-1][1] == ft.Colors.RED
+    assert "저장" in status_calls[-1][0]
+
+
+def test_run_cookie_login_reports_store_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-5 (로그인은 됐는데 저장이 실패한 경우 — 성공으로 표시하면 안 된다)
+    gui, _ = _bare_gui_with_run_thread_page()
+    status_calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        gui, "_set_cookie_status", lambda msg, color: status_calls.append((msg, color))
+    )
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: "NID_AUT=a; NID_SES=b")
+    monkeypatch.setattr(gui_mod, "save_cookie", _raise_store_error)
+
+    gui._run_cookie_login()
+
+    assert status_calls[-1][1] == ft.Colors.RED
+    assert not gui._cookie_login_busy, "실패해도 재진입 가드는 풀려야 한다"
+
+
+def _cookie_status_gui(monkeypatch: pytest.MonkeyPatch, migration: CookieMigration):
+    gui = _bare_gui()
+    gui._migration = migration
+    gui._muted_color = None
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(gui, "_set_cookie_status", lambda msg, color: calls.append((msg, color)))
+    return gui, calls
+
+
+def test_cookie_status_warns_after_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: Test-10
+    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
+
+    gui._refresh_cookie_status()
+
+    assert calls[-1][1] == ft.Colors.RED
+    assert "네이버 로그인" in calls[-1][0], "무엇을 해야 하는지 알려야 한다"
+
+
+def test_cookie_status_stays_neutral_when_nothing_was_migrated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-10 (평문 파일이 없던 대부분의 실행에서 경고를 띄우면 안 된다)
+    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.NOTHING)
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
+
+    gui._refresh_cookie_status()
+
+    assert calls[-1][1] != ft.Colors.RED
+    assert calls[-1][0] == "저장된 쿠키: 없음"
+
+
+def test_cookie_status_drops_the_warning_once_a_cookie_is_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: Test-10 (재로그인하면 안내가 저절로 사라져야 한다)
+    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
+
+    gui._refresh_cookie_status()
+
+    assert calls[-1][1] == ft.Colors.GREEN
