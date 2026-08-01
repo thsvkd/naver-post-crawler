@@ -311,7 +311,7 @@ uv run naver-post-crawler https://cafe.naver.com/mycafe --cookie-file "cafe_cook
 실행 OS를 감지하여 `flet build`로 네이티브 앱을 만들고, 그것을 Velopack 설치기/업데이트 패키지로 포장합니다.
 
 ```bash
-python scripts/build.py
+uv run python scripts/build.py
 ```
 
 - 결과물: `dist/naver-post-crawler-<target>/`(앱 번들)과 `dist/velopack/`(Windows는 `*-Setup.exe`·`*.nupkg`·`releases.win.json`, macOS는 `*-Setup.pkg`·`*.nupkg`·`releases.osx.json`).
@@ -322,13 +322,16 @@ python scripts/build.py
 **배포**
 
 ```bash
-python scripts/deploy.py --dry-run   # 올릴 에셋 목록만 확인
-python scripts/deploy.py             # 빌드 + GitHub 릴리스 업로드
+uv run python scripts/deploy.py --dry-run   # 올릴 에셋 목록만 확인
+uv run python scripts/deploy.py             # 빌드 + 업로드 (draft로 남습니다)
+uv run python scripts/deploy.py --publish   # 양쪽 플랫폼이 다 올라간 뒤 공개
 ```
 
 - `pyproject.toml`의 `[project].version`이 버전 SSoT입니다. 먼저 올려 두지 않으면 배포가 중단됩니다.
-- 릴리스 노트는 사람이 작성해 `dist/velopack/RELEASE_NOTES.md`에 두거나 `--notes`로 지정합니다.
-- 두 플랫폼 산출물은 **같은 태그 하나**에 올립니다. 두 번째 플랫폼에서 실행하면 에셋만 합류하고 릴리스 노트는 건드리지 않습니다.
+- 릴리스 노트는 사람이 작성해 `dist/velopack/RELEASE_NOTES.md`에 두거나 `--notes`로 지정합니다. 첫 플랫폼에서 한 번만 반영되고, 두 번째 플랫폼 실행은 본문을 건드리지 않습니다.
+- 두 플랫폼 산출물은 **같은 태그 하나**에 올립니다. 업로드는 기본적으로 draft로 남습니다 — 한쪽만 올라간 상태로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 보게 되기 때문입니다.
+- 배포 순서: (1) 한 OS에서 빌드·업로드 → (2) 다른 OS에서 같은 태그로 업로드 → (3) 마지막에 공개.
+  릴리스를 만든 커밋이 태그에 담기도록 **먼저 main에 머지·푸시한 뒤** 배포하십시오.
 
 **테스트**
 
