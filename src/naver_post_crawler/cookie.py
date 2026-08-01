@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
@@ -208,17 +209,48 @@ class CookieMigration(StrEnum):
     """보관소에 이미 값이 있어 덮어쓰지 않고 평문 파일만 지웠다."""
 
     LOST = "lost"
-    """보관소에 넣지 못한 채 평문 파일을 지웠다 — 사용자는 다시 로그인해야 한다."""
+    """보관소에 넣지 못했다 — 사용자는 다시 로그인해야 한다."""
 
-    EXPOSED = "exposed"
-    """평문 파일을 **지우지 못했다** — 자격증명이 아직 디스크에 그대로 있다.
 
-    보관소 처리가 성공했더라도 이 결과가 우선한다. 이 작업의 목적은 로그인 유지가 아니라
-    평문 노출 제거이고, 파일이 남았다면 그 목적이 달성되지 않은 것이다.
+@dataclass(frozen=True, slots=True)
+class MigrationResult:
+    """이관 결과. **노출과 손실은 독립적인 두 사실이라 한 값으로 접지 않는다.**
+
+    둘을 하나의 열거형으로 합치면 반드시 한쪽이 사라진다. 실제로 "보관소 저장도 실패하고
+    파일도 못 지운" 조합에서 노출만 알리면, 사용자는 로그아웃된 줄 모른 채 안내대로 파일을
+    지워 **남아 있던 유일한 쿠키 사본을 없앤다** — 그대로 뒀다면 다음 실행에서 이관될 수도
+    있었다. 안내가 능동적으로 해로워지는 지점이다.
     """
 
+    outcome: CookieMigration
+    """보관소 쪽에서 일어난 일."""
 
-def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
+    exposed: bool
+    """평문 파일이 **아직 디스크에 남아 있다**(지우지 못했다)."""
+
+    path: Path
+    """평문 파일 경로. 안내에 그대로 싣는다."""
+
+
+def migration_advice(result: MigrationResult) -> str | None:
+    """사용자에게 보여야 할 안내 문구(보여줄 것이 없으면 ``None``).
+
+    GUI와 CLI가 같은 판단을 하도록 한곳에 둔다. 순서가 중요하다 — 노출과 손실이 겹치면
+    **지우기 전에 재로그인부터** 하라고 해야 한다.
+    """
+    if result.exposed and result.outcome is CookieMigration.LOST:
+        return (
+            "이전 버전의 쿠키 파일이 남아 있고 로그인도 풀렸습니다. "
+            f"'네이버 로그인'을 다시 한 뒤에 이 파일을 지워 주세요: {result.path}"
+        )
+    if result.exposed:
+        return f"이전 버전의 쿠키 파일을 지우지 못했습니다 — 직접 삭제해 주세요: {result.path}"
+    if result.outcome is CookieMigration.LOST:
+        return "이전 버전에 저장된 쿠키를 옮기지 못했습니다 — '네이버 로그인'을 다시 해 주세요."
+    return None
+
+
+def migrate_legacy_cookie(directory: Path | None = None) -> MigrationResult:
     """평문 쿠키 파일이 남아 있으면 보관소로 옮기고 **파일을 지운다**.
 
     앱이 시작할 때 부른다. 설치 시점이 아니라 시작 시점인 이유는 OTA 업데이트가 새 설치가
@@ -227,11 +259,11 @@ def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
     보관소 기록이 실패해도 평문 파일은 지운다. 자격증명 노출을 없애는 것이 이 작업의
     목적이고, 세션 쿠키는 재로그인으로 다시 얻을 수 있는 값이다(핸드오프 D-3).
     어떤 실패도 밖으로 내보내지 않는다 — 이관 때문에 앱이 시작하지 못하면 안 된다.
-    대신 결과를 :class:`CookieMigration`으로 돌려 호출자가 사용자에게 알리게 한다.
+    대신 결과를 :class:`MigrationResult`로 돌려 호출자가 사용자에게 알리게 한다.
     """
     path = legacy_cookie_path(directory)
     if not path.exists():
-        return CookieMigration.NOTHING
+        return MigrationResult(CookieMigration.NOTHING, exposed=False, path=path)
     try:
         cookie = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -266,7 +298,8 @@ def migrate_legacy_cookie(directory: Path | None = None) -> CookieMigration:
         # 평문이 그대로 남았다. 백신·인덱서·다른 인스턴스가 파일을 잡고 있으면 실제로
         # 일어난다. 로그로만 남기면 이 시점에는 핸들러가 없어(창 모드는 stderr도 없다)
         # 어디에도 보이지 않으므로, 결과에 실어 올려 호출자가 사용자에게 알리게 한다.
+        # **outcome은 그대로 둔다** — 노출은 손실을 덮는 사실이 아니라 별개의 사실이다.
         logger.warning("평문 쿠키 파일을 지우지 못했습니다: %s", path, exc_info=True)
-        return CookieMigration.EXPOSED
+        return MigrationResult(outcome, exposed=True, path=path)
     logger.info("평문 쿠키 파일을 정리했습니다(%s).", outcome.value)
-    return outcome
+    return MigrationResult(outcome, exposed=False, path=path)

@@ -18,7 +18,7 @@ import pytest
 
 import naver_post_crawler.cookie_login as cookie_login_mod
 import naver_post_crawler.gui as gui_mod
-from naver_post_crawler.cookie import CookieMigration, app_data_dir
+from naver_post_crawler.cookie import CookieMigration, MigrationResult, app_data_dir
 from naver_post_crawler.errors import CredentialStoreError
 from naver_post_crawler.gui import CrawlerGUI, _first_picked_path
 
@@ -292,6 +292,11 @@ def _bare_gui_with_run_thread_page() -> tuple[CrawlerGUI, _FakeRunThreadPage]:
     gui = object.__new__(CrawlerGUI)
     fake_page = _FakeRunThreadPage()
     gui.page = fake_page  # type: ignore[assignment]
+    # 저장 성공 경로가 _refresh_cookie_status를 지나므로 이관 결과가 필요하다.
+    gui._migration = MigrationResult(
+        CookieMigration.NOTHING, exposed=False, path=Path("/nonexistent/cafe.txt")
+    )
+    gui._muted_color = None
     return gui, fake_page
 
 
@@ -571,7 +576,16 @@ def test_run_cookie_login_reports_store_failure(monkeypatch: pytest.MonkeyPatch)
     assert not gui._cookie_login_busy, "실패해도 재진입 가드는 풀려야 한다"
 
 
-def _cookie_status_gui(monkeypatch: pytest.MonkeyPatch, migration: CookieMigration):
+def _result(
+    outcome: CookieMigration = CookieMigration.NOTHING,
+    *,
+    exposed: bool = False,
+    path: Path | None = None,
+) -> MigrationResult:
+    return MigrationResult(outcome, exposed=exposed, path=path or Path("/nonexistent/cafe.txt"))
+
+
+def _cookie_status_gui(monkeypatch: pytest.MonkeyPatch, migration: MigrationResult):
     gui = _bare_gui()
     gui._migration = migration
     gui._muted_color = None
@@ -581,8 +595,8 @@ def _cookie_status_gui(monkeypatch: pytest.MonkeyPatch, migration: CookieMigrati
 
 
 def test_cookie_status_warns_after_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: cred/Test-10
-    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
+    # covers: cred/Test-12b
+    gui, calls = _cookie_status_gui(monkeypatch, _result(CookieMigration.LOST))
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
 
     gui._refresh_cookie_status()
@@ -594,8 +608,8 @@ def test_cookie_status_warns_after_a_lost_migration(monkeypatch: pytest.MonkeyPa
 def test_cookie_status_stays_neutral_when_nothing_was_migrated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # covers: cred/Test-10 (평문 파일이 없던 대부분의 실행에서 경고를 띄우면 안 된다)
-    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.NOTHING)
+    # covers: cred/Test-12b (평문 파일이 없던 대부분의 실행에서 경고를 띄우면 안 된다)
+    gui, calls = _cookie_status_gui(monkeypatch, _result())
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
 
     gui._refresh_cookie_status()
@@ -607,8 +621,8 @@ def test_cookie_status_stays_neutral_when_nothing_was_migrated(
 def test_cookie_status_drops_the_warning_once_a_cookie_is_stored(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # covers: cred/Test-10 (재로그인하면 안내가 저절로 사라져야 한다)
-    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.LOST)
+    # covers: cred/Test-12b (재로그인하면 안내가 저절로 사라져야 한다)
+    gui, calls = _cookie_status_gui(monkeypatch, _result(CookieMigration.LOST))
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
 
     gui._refresh_cookie_status()
@@ -637,28 +651,105 @@ def test_build_runs_the_legacy_cookie_migration(monkeypatch: pytest.MonkeyPatch)
 def test_cookie_status_warns_about_a_leftover_plaintext_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: cred/Test-9
+    # covers: cred/Test-12b
     # 평문을 지우지 못하면 보관소 저장이 성공했더라도 자격증명이 디스크에 남는다.
-    # 저장 성공 문구가 이 사실을 가리면 안 된다.
-    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path))
-    (tmp_path / gui_mod.legacy_cookie_path().name).write_text("NID_AUT=a", encoding="utf-8")
-    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.EXPOSED)
+    leftover = tmp_path / "cafe_cookie.txt"
+    leftover.write_text("NID_AUT=a", encoding="utf-8")
+    gui, calls = _cookie_status_gui(
+        monkeypatch, _result(CookieMigration.MOVED, exposed=True, path=leftover)
+    )
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
 
     gui._refresh_cookie_status()
 
     assert calls[-1][1] == ft.Colors.RED
     assert "직접 삭제" in calls[-1][0]
+    assert str(leftover) in calls[-1][0], "어느 파일을 지워야 하는지 알려야 한다"
 
 
 def test_leftover_warning_clears_once_the_file_is_gone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: cred/Test-9 (사용자가 직접 지우면 경고가 저절로 걷혀야 한다)
-    monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path))
-    gui, calls = _cookie_status_gui(monkeypatch, CookieMigration.EXPOSED)
+    # covers: cred/Test-12b (사용자가 직접 지우면 경고가 저절로 걷혀야 한다)
+    gui, calls = _cookie_status_gui(
+        monkeypatch,
+        _result(CookieMigration.MOVED, exposed=True, path=tmp_path / "already-deleted.txt"),
+    )
     monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
 
     gui._refresh_cookie_status()
 
     assert calls[-1][1] == ft.Colors.GREEN
+
+
+def test_exposure_warning_survives_a_successful_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-12b
+    # 사용자가 빨간 경고를 보고 '네이버 로그인'을 눌러 저장에 성공하면, 초록 성공 문구가
+    # 경고를 덮어 문제가 해결됐다고 오해하게 된다. 평문은 그대로 디스크에 있다.
+    leftover = tmp_path / "cafe_cookie.txt"
+    leftover.write_text("NID_AUT=a", encoding="utf-8")
+    gui, calls = _cookie_status_gui(
+        monkeypatch, _result(CookieMigration.MOVED, exposed=True, path=leftover)
+    )
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=a")
+
+    gui._refresh_cookie_status("네이버 로그인 완료 — 쿠키를 저장했습니다. ✓")
+
+    assert calls[-1][1] == ft.Colors.RED, "저장 성공 문구가 노출 경고를 덮으면 안 된다"
+
+
+def test_exposure_and_loss_together_tell_the_user_to_log_in_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-12b
+    # 노출과 손실이 겹치면, 안내대로 파일부터 지운 사용자는 다음 실행에서 이관될 수도
+    # 있었던 **유일한 쿠키 사본**을 없앤다. 순서를 뒤집어 안내해야 한다.
+    leftover = tmp_path / "cafe_cookie.txt"
+    leftover.write_text("NID_AUT=a", encoding="utf-8")
+    gui, calls = _cookie_status_gui(
+        monkeypatch, _result(CookieMigration.LOST, exposed=True, path=leftover)
+    )
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: None)
+
+    gui._refresh_cookie_status()
+
+    message = calls[-1][0]
+    assert calls[-1][1] == ft.Colors.RED
+    assert "네이버 로그인" in message, "로그인이 풀렸다는 사실이 사라지면 안 된다"
+    assert message.index("네이버 로그인") < message.index("지워"), "재로그인이 삭제보다 먼저다"
+
+
+def test_successful_save_routes_through_the_status_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-12b
+    # 성공 문구를 _set_cookie_status로 직접 쓰면 노출 경고보다 뒤에 덮어써진다. 우선순위가
+    # 한 곳(_refresh_cookie_status)에서만 결정되도록 배선 자체를 고정한다.
+    gui = _bare_gui()
+    gui.cookie_field = _FakeText()  # type: ignore[assignment]
+    gui.cookie_field.page = None
+    seen: list[str | None] = []
+    monkeypatch.setattr(gui, "_refresh_cookie_status", lambda success=None: seen.append(success))
+    monkeypatch.setattr(gui_mod, "parse_cookie_file", lambda _p: "NID_AUT=a")
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda *a, **kw: None)
+
+    gui._update_cookie(tmp_path / "cookies.txt")
+
+    assert seen and seen[0] is not None, "성공 문구도 상태 판정을 거쳐야 한다"
+
+
+def test_successful_login_routes_through_the_status_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # covers: cred/Test-12b
+    gui, _ = _bare_gui_with_run_thread_page()
+    seen: list[str | None] = []
+    monkeypatch.setattr(gui, "_refresh_cookie_status", lambda success=None: seen.append(success))
+    monkeypatch.setattr(gui_mod, "login_and_capture", lambda *a, **kw: "NID_AUT=a")
+    monkeypatch.setattr(gui_mod, "save_cookie", lambda *a, **kw: None)
+
+    gui._run_cookie_login()
+
+    assert seen and seen[0] is not None, "성공 문구도 상태 판정을 거쳐야 한다"

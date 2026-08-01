@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 import naver_post_crawler.cli as cli_mod
 from naver_post_crawler.cli import _decide_retry, _resolve_cli_cookie, _run, main
+from naver_post_crawler.cookie import CookieMigration, MigrationResult
 from naver_post_crawler.crawler import Outcome, PostResult
 from naver_post_crawler.models import PostMeta
 
@@ -92,12 +93,18 @@ def test_since_after_until_raises_usage_error() -> None:
 # covers 태그의 번호는 docs/handoff-credential-storage.md의 인수 기준이다.
 
 
-def _spy_migration(monkeypatch: pytest.MonkeyPatch, outcome: cli_mod.CookieMigration) -> list[int]:
+def _spy_migration(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: CookieMigration = CookieMigration.NOTHING,
+    *,
+    exposed: bool = False,
+) -> list[int]:
     calls: list[int] = []
+    result = MigrationResult(outcome, exposed=exposed, path=Path("/tmp/cafe_cookie.txt"))
 
-    def fake() -> cli_mod.CookieMigration:
+    def fake() -> MigrationResult:
         calls.append(1)
-        return outcome
+        return result
 
     monkeypatch.setattr(cli_mod, "migrate_legacy_cookie", fake)
     monkeypatch.setattr(cli_mod, "_check_update", lambda: None)
@@ -106,7 +113,7 @@ def _spy_migration(monkeypatch: pytest.MonkeyPatch, outcome: cli_mod.CookieMigra
 
 def test_cli_runs_the_legacy_cookie_migration(monkeypatch: pytest.MonkeyPatch) -> None:
     # covers: cred/Test-8
-    calls = _spy_migration(monkeypatch, cli_mod.CookieMigration.NOTHING)
+    calls = _spy_migration(monkeypatch)
 
     result = CliRunner().invoke(main, ["--check-update"])
 
@@ -115,8 +122,8 @@ def test_cli_runs_the_legacy_cookie_migration(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_cli_reports_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: cred/Test-10
-    _spy_migration(monkeypatch, cli_mod.CookieMigration.LOST)
+    # covers: cred/Test-12b
+    _spy_migration(monkeypatch, CookieMigration.LOST)
 
     result = CliRunner().invoke(main, ["--check-update"])
 
@@ -127,8 +134,8 @@ def test_cli_reports_a_lost_migration(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cli_reports_a_leftover_plaintext_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: cred/Test-9 (지우지 못했으면 평문이 그대로 남아 있다 — 조용히 넘기면 안 된다)
-    _spy_migration(monkeypatch, cli_mod.CookieMigration.EXPOSED)
+    # covers: cred/Test-12b (지우지 못했으면 평문이 그대로 남아 있다)
+    _spy_migration(monkeypatch, CookieMigration.MOVED, exposed=True)
 
     result = CliRunner().invoke(main, ["--check-update"])
 

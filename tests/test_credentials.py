@@ -11,7 +11,10 @@
 
 from __future__ import annotations
 
+import builtins
+import os
 import sys
+from pathlib import Path
 
 import keyring.errors
 import pytest
@@ -64,26 +67,26 @@ def broken(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_save_then_load_returns_same_value(fake: FakeKeyring) -> None:
-    # covers: Test-1
+    # covers: cred/Test-1
     credentials.save("NID_AUT=a; NID_SES=b")
 
     assert credentials.load() == "NID_AUT=a; NID_SES=b"
 
 
 def test_load_without_saving_returns_none(fake: FakeKeyring) -> None:
-    # covers: Test-2
+    # covers: cred/Test-2
     assert credentials.load() is None
 
 
 def test_load_returns_none_for_empty_stored_value(fake: FakeKeyring) -> None:
-    # covers: Test-2 (빈 값과 미저장을 구분하지 못하면 GUI가 '로그인됨'으로 잘못 표시한다)
+    # covers: cred/Test-2 (빈 값과 미저장을 구분하지 못하면 GUI가 '로그인됨'으로 잘못 표시한다)
     fake.store[(credentials.SERVICE, credentials.ACCOUNT)] = ""
 
     assert credentials.load() is None
 
 
 def test_delete_removes_the_secret(fake: FakeKeyring) -> None:
-    # covers: Test-3
+    # covers: cred/Test-3
     credentials.save("NID_AUT=a")
     credentials.delete()
 
@@ -91,13 +94,13 @@ def test_delete_removes_the_secret(fake: FakeKeyring) -> None:
 
 
 def test_delete_is_idempotent(fake: FakeKeyring) -> None:
-    # covers: Test-3 (제거 훅이 두 번 실행돼도 실패하면 안 된다)
+    # covers: cred/Test-3 (제거 훅이 두 번 실행돼도 실패하면 안 된다)
     credentials.delete()
     credentials.delete()  # 없는 항목 삭제도 오류가 아니다
 
 
 def test_backend_is_chosen_explicitly_per_platform() -> None:
-    # covers: Test-4
+    # covers: cred/Test-4
     backend = credentials.platform_backend()
     module = type(backend).__module__
 
@@ -112,7 +115,7 @@ def test_backend_is_chosen_explicitly_per_platform() -> None:
 def test_backend_never_uses_keyring_autodiscovery(
     fake: FakeKeyring, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: Test-4
+    # covers: cred/Test-4
     # 번들에는 dist-info가 없을 수 있고, 그러면 엔트리포인트 탐색이 조용히 빈 백엔드를
     # 고른다(개발에서는 통과, 배포본에서만 실패). 탐색 경로를 아예 안 타는지 고정한다.
     def explode() -> None:
@@ -126,7 +129,7 @@ def test_backend_never_uses_keyring_autodiscovery(
 
 
 def test_platform_backend_does_not_use_autodiscovery(monkeypatch: pytest.MonkeyPatch) -> None:
-    # covers: Test-4
+    # covers: cred/Test-4
     def explode() -> None:
         raise AssertionError("keyring 자동 탐색(get_keyring)을 호출하면 안 된다")
 
@@ -136,17 +139,17 @@ def test_platform_backend_does_not_use_autodiscovery(monkeypatch: pytest.MonkeyP
 
 
 def test_load_returns_none_when_backend_unavailable(broken: None) -> None:
-    # covers: Test-5 (키체인 접근을 거부해도 앱은 '로그인 필요' 상태로 계속 동작해야 한다)
+    # covers: cred/Test-5 (키체인 접근을 거부해도 앱은 '로그인 필요' 상태로 계속 동작해야 한다)
     assert credentials.load() is None
 
 
 def test_delete_survives_unavailable_backend(broken: None) -> None:
-    # covers: Test-5
+    # covers: cred/Test-5
     credentials.delete()  # 예외가 새어 나가면 제거 훅이 실패한다
 
 
 def test_save_raises_domain_error_when_backend_unavailable(broken: None) -> None:
-    # covers: Test-5 (저장 실패는 조용히 넘기지 않고 GUI가 표시할 수 있는 형태로 올린다)
+    # covers: cred/Test-5 (저장 실패는 조용히 넘기지 않고 GUI가 표시할 수 있는 형태로 올린다)
     with pytest.raises(CredentialStoreError):
         credentials.save("NID_AUT=a")
 
@@ -154,7 +157,7 @@ def test_save_raises_domain_error_when_backend_unavailable(broken: None) -> None
 def test_saving_never_writes_the_secret_to_a_file(
     fake: FakeKeyring, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # covers: Test-6 (이번 작업의 존재 이유 — 평문 파일 저장이 회귀로 되살아나면 안 된다)
+    # covers: cred/Test-6 (이번 작업의 존재 이유 — 평문 파일 저장이 회귀로 되살아나면 안 된다)
     monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(tmp_path))
     secret = "NID_AUT=SECRETVALUE; NID_SES=OTHERSECRET"
 
@@ -168,7 +171,7 @@ def test_saving_never_writes_the_secret_to_a_file(
 
 
 def test_oversized_secret_is_rejected_before_reaching_the_backend(fake: FakeKeyring) -> None:
-    # covers: Test-7
+    # covers: cred/Test-7
     # Windows 자격 증명 관리자의 blob 한도는 2560바이트이고 UTF-16 저장이라 실질 절반이다.
     # 넘으면 조용히 실패해 '로그인은 했는데 저장이 안 되는' 증상이 된다.
     oversized = "x" * (credentials.MAX_SECRET_BYTES // 2 + 1)
@@ -180,7 +183,7 @@ def test_oversized_secret_is_rejected_before_reaching_the_backend(fake: FakeKeyr
 
 
 def test_secret_at_the_limit_is_accepted(fake: FakeKeyring) -> None:
-    # covers: Test-7 (경계에서 멀쩡한 값을 거부하면 사용자가 로그인할 수 없다)
+    # covers: cred/Test-7 (경계에서 멀쩡한 값을 거부하면 사용자가 로그인할 수 없다)
     at_limit = "x" * (credentials.MAX_SECRET_BYTES // 2)
 
     credentials.save(at_limit)
@@ -189,7 +192,7 @@ def test_secret_at_the_limit_is_accepted(fake: FakeKeyring) -> None:
 
 
 def test_size_limit_counts_utf16_bytes_not_characters(fake: FakeKeyring) -> None:
-    # covers: Test-7
+    # covers: cred/Test-7
     # 한글도 BMP라 UTF-16에서 2바이트다. 문자 수로 세면 한도를 잘못 계산한다.
     assert credentials.secret_size_bytes("가나다") == 6
     assert credentials.secret_size_bytes("abc") == 6
@@ -207,20 +210,20 @@ class ReadFailsKeyring(FakeKeyring):
 
 
 def test_load_strict_raises_when_the_store_cannot_be_read(broken: None) -> None:
-    # covers: Test-5 (호출자가 '값 없음'과 '읽지 못함'을 구분할 수 있어야 한다)
+    # covers: cred/Test-5 (호출자가 '값 없음'과 '읽지 못함'을 구분할 수 있어야 한다)
     with pytest.raises(CredentialStoreError):
         credentials.load_strict()
 
 
 def test_load_strict_returns_none_when_nothing_is_stored(fake: FakeKeyring) -> None:
-    # covers: Test-2
+    # covers: cred/Test-2
     assert credentials.load_strict() is None
 
 
 def test_unreadable_store_is_logged_at_warning(
     broken: None, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # covers: Test-5
+    # covers: cred/Test-5
     # DEBUG로 두면 기본 레벨(INFO)에서 사라져, 키체인 접근 거부가 어디에도 흔적을 남기지
     # 않는다. 사용자에게는 "저장된 쿠키: 없음"으로만 보이므로 로그가 유일한 단서다.
     with caplog.at_level("WARNING", logger="naver_post_crawler.credentials"):
@@ -230,7 +233,7 @@ def test_unreadable_store_is_logged_at_warning(
 
 
 def test_save_failure_message_warns_that_the_previous_value_may_be_gone(broken: None) -> None:
-    # covers: Test-5
+    # covers: cred/Test-5
     # macOS 백엔드는 지우고 다시 추가한다(실측: keyring 25.7.0 backends/macOS/api.py).
     # 추가 단계에서 실패하면 이전 쿠키도 이미 사라진 상태라, "실패했으니 예전 것은 남았겠지"
     # 라는 오해를 문구가 막아야 한다.
@@ -241,9 +244,30 @@ def test_save_failure_message_warns_that_the_previous_value_may_be_gone(broken: 
 
 
 def test_oversized_secret_error_names_an_in_app_remedy(fake: FakeKeyring) -> None:
-    # covers: Test-7
+    # covers: cred/Test-7
     # 한도 초과를 알리기만 하고 방법을 주지 않으면 사용자는 앱 안에서 할 수 있는 일이 없다.
     with pytest.raises(CredentialStoreError) as excinfo:
         credentials.save("x" * (credentials.MAX_SECRET_BYTES // 2 + 1))
 
     assert "네이버 로그인" in str(excinfo.value)
+
+
+def test_saving_performs_no_file_writes_at_all(
+    fake: FakeKeyring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-6
+    # 디렉터리를 훑어 비밀값을 찾는 방식은 **훑는 곳에만** 효력이 있다. 저장 경로가 다른
+    # 위치(임시폴더 등)에 평문을 쓰도록 회귀해도 그런 테스트는 통과한다. 여기서는 저장
+    # 경로가 파일을 **여는 행위 자체**를 금지해, 기록 위치와 무관하게 잡는다.
+    def forbid(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"자격증명 저장 경로가 파일을 열었다: {args!r}")
+
+    monkeypatch.setattr(builtins, "open", forbid)
+    monkeypatch.setattr(os, "open", forbid)
+    monkeypatch.setattr(Path, "write_text", forbid)
+    monkeypatch.setattr(Path, "write_bytes", forbid)
+    monkeypatch.setattr(Path, "open", forbid)
+
+    credentials.save("NID_AUT=SECRETVALUE; NID_SES=OTHERSECRET")
+
+    assert fake.store[(credentials.SERVICE, credentials.ACCOUNT)].startswith("NID_AUT=")

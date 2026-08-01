@@ -37,14 +37,14 @@ def _readme() -> str:
 
 
 def test_readme_has_an_uninstall_section() -> None:
-    # covers: Test-16
+    # covers: cred/Test-16
     assert re.search(r"^#+ .*제거", _readme(), re.MULTILINE), (
         "README에 제거 섹션이 없다 — macOS에서는 문서가 유일한 정리 수단이다"
     )
 
 
 def test_readme_documents_the_macos_data_path_from_build_config() -> None:
-    # covers: Test-16
+    # covers: cred/Test-16
     # 앱 데이터 폴더 이름은 번들 ID이고, 번들 ID는 build.py의 조직 ID에서 파생된다.
     build = _load_build()
     bundle_id = f"{build._ORG}.naver-post-crawler"
@@ -55,7 +55,7 @@ def test_readme_documents_the_macos_data_path_from_build_config() -> None:
 
 
 def test_readme_documents_leftovers_that_no_hook_can_remove() -> None:
-    # covers: Test-16
+    # covers: cred/Test-16
     readme = _readme()
 
     # 홈 디렉터리 설치는 --volume이 필요해 명령 형태가 갈린다. 두 토큰으로 확인한다.
@@ -65,7 +65,7 @@ def test_readme_documents_leftovers_that_no_hook_can_remove() -> None:
 
 
 def test_readme_documents_the_windows_removal_entry_point() -> None:
-    # covers: Test-16
+    # covers: cred/Test-16
     readme = _readme()
     section = readme[readme.index("제거") :]
 
@@ -73,7 +73,7 @@ def test_readme_documents_the_windows_removal_entry_point() -> None:
 
 
 def test_readme_keychain_command_matches_the_names_actually_used() -> None:
-    # covers: Test-16
+    # covers: cred/Test-16
     # macOS 데이터 경로는 빌드 설정과 대조하면서 자격증명 이름만 빠뜨리면, SERVICE를
     # 바꾸는 순간 문서가 조용히 거짓이 된다. 사용자는 지웠다고 믿은 채 항목을 남긴다.
     from naver_post_crawler import credentials

@@ -81,7 +81,7 @@ def _uninstall_block(source: str) -> str:
 
 
 def test_uninstall_hook_deletes_the_stored_credential() -> None:
-    # covers: Test-13
+    # covers: cred/Test-13
     block = _uninstall_block(_patched())
 
     for target in credentials.WINDOWS_TARGETS:
@@ -90,7 +90,7 @@ def test_uninstall_hook_deletes_the_stored_credential() -> None:
 
 
 def test_credential_deletion_lives_only_inside_the_uninstall_branch() -> None:
-    # covers: Test-14 (install/updated/obsolete에서 지우면 매 업데이트마다 로그아웃된다)
+    # covers: cred/Test-14 (install/updated/obsolete에서 지우면 매 업데이트마다 로그아웃된다)
     patched = _patched()
     block = _uninstall_block(patched)
 
@@ -103,7 +103,7 @@ def test_credential_deletion_lives_only_inside_the_uninstall_branch() -> None:
 
 @pytest.mark.parametrize("hook_arg", _NON_UNINSTALL_HOOKS)
 def test_non_uninstall_hooks_still_exit_without_deleting(hook_arg: str) -> None:
-    # covers: Test-14
+    # covers: cred/Test-14
     patched = _patched()
     condition = re.search(r"if\s*\(.*--veloapp-uninstall.*\)", patched)
     assert condition is not None
@@ -116,7 +116,7 @@ def test_non_uninstall_hooks_still_exit_without_deleting(hook_arg: str) -> None:
 
 
 def test_hook_exits_successfully_regardless_of_deletion_result() -> None:
-    # covers: Test-15
+    # covers: cred/Test-15
     # 항목이 없으면 CredDeleteW는 실패를 돌려준다. 그걸 이유로 종료 코드를 바꾸면
     # Velopack이 "설치가 부분적으로 성공했습니다"를 띄운다.
     patched = _patched()
@@ -128,7 +128,7 @@ def test_hook_exits_successfully_regardless_of_deletion_result() -> None:
 
 
 def test_credential_api_is_declared_and_linked() -> None:
-    # covers: Test-13 (헤더·라이브러리가 빠지면 컴파일/링크 단계에서만 드러난다)
+    # covers: cred/Test-13 (헤더·라이브러리가 빠지면 컴파일/링크 단계에서만 드러난다)
     patched = _patched()
 
     assert "#include <wincred.h>" in patched
@@ -136,7 +136,7 @@ def test_credential_api_is_declared_and_linked() -> None:
 
 
 def test_windows_targets_match_what_keyring_actually_writes() -> None:
-    # covers: Test-13
+    # covers: cred/Test-13
     # C++ 훅은 keyring이 만든 항목 이름을 그대로 알아야 한다. 이 대응이 어긋나면
     # 훅은 조용히 아무것도 못 지우고, 제거 후에도 자격증명이 남는다.
     from keyring.backends.Windows import WinVaultKeyring

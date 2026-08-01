@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import flet as ft
@@ -26,11 +27,10 @@ from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
 from .cookie import (
-    CookieMigration,
     app_data_dir,
-    legacy_cookie_path,
     load_cookie,
     migrate_legacy_cookie,
+    migration_advice,
     parse_cookie_file,
     save_cookie,
 )
@@ -374,7 +374,7 @@ class CrawlerGUI:
         self.cookie_field.value = ""
         if self.cookie_field.page is not None:
             self.cookie_field.update()
-        self._set_cookie_status("쿠키 저장됨 — 카페 백업에 자동 사용됩니다. ✓", ft.Colors.GREEN)
+        self._refresh_cookie_status("쿠키 저장됨 — 카페 백업에 자동 사용됩니다. ✓")
 
     def _cookie_login(self, _e: ft.ControlEvent) -> None:
         """'네이버 로그인' 버튼 — 로그인 웹뷰 헬퍼를 오프스레드로 띄운다.
@@ -405,9 +405,8 @@ class CrawlerGUI:
                     logger.error("로그인 쿠키 저장 실패", exc_info=True)
                     self._set_cookie_status(f"쿠키 저장 실패: {exc}", ft.Colors.RED)
                     return
-                self._set_cookie_status(
-                    "네이버 로그인 완료 — 쿠키를 저장했습니다. 카페 백업에 자동 사용됩니다. ✓",
-                    ft.Colors.GREEN,
+                self._refresh_cookie_status(
+                    "네이버 로그인 완료 — 쿠키를 저장했습니다. 카페 백업에 자동 사용됩니다. ✓"
                 )
             else:
                 self._set_cookie_status(
@@ -418,28 +417,31 @@ class CrawlerGUI:
             # 다음 클릭이 다시 로그인 창을 띄울 수 있도록 진행 플래그를 해제한다.
             self._cookie_login_busy = False
 
-    def _refresh_cookie_status(self) -> None:
-        """저장된 쿠키 유무를 상태 텍스트에 반영한다.
+    def _refresh_cookie_status(self, success: str | None = None) -> None:
+        """쿠키 상태를 한곳에서 판정해 상태 텍스트에 반영한다.
 
-        이관 중 쿠키를 잃었다면(:attr:`CookieMigration.LOST`) 그 사실을 알린다. 알리지
-        않으면 사용자는 업데이트 후 갑자기 로그아웃된 이유를 알 방법이 없다. 새로 저장하면
-        저장된 쿠키가 생기므로 이 안내는 저절로 사라진다.
+        ``success``는 방금 저장에 성공한 경우의 문구다. **성공 문구보다 이관 경고가
+        우선한다** — 저장이 잘 됐다고 초록 문구를 띄우면, 평문 파일이 아직 디스크에 남아
+        있다는 경고를 덮어 사용자가 문제가 해결됐다고 오해한다. 모든 경로가 이 메서드를
+        지나게 해서 그 우선순위를 한 곳에서만 결정한다.
+
+        평문 파일이 실제로 사라졌으면 노출 경고는 저절로 걷힌다. 새 쿠키를 저장하면 손실
+        안내도 마찬가지다.
         """
-        if self._migration is CookieMigration.EXPOSED and legacy_cookie_path().exists():
-            # 보관소로 옮겼든 아니든 평문이 디스크에 남아 있다. 이 작업의 목적이 그
-            # 노출 제거였으므로 저장 성공보다 먼저 알린다. 파일이 사라지면 저절로 걷힌다.
-            self._set_cookie_status(
-                f"이전 버전의 쿠키 파일을 지우지 못했습니다 — 직접 삭제해 주세요: "
-                f"{legacy_cookie_path()}",
-                ft.Colors.RED,
-            )
+        result = self._migration
+        if result.exposed and not result.path.exists():
+            # 사용자가 직접 지웠다. 더 이상 노출이 아니다.
+            result = replace(result, exposed=False)
+        advice = migration_advice(result)
+
+        if result.exposed:
+            self._set_cookie_status(advice or "", ft.Colors.RED)
+        elif success is not None:
+            self._set_cookie_status(success, ft.Colors.GREEN)
         elif load_cookie() is not None:
             self._set_cookie_status("저장된 쿠키: 있음 ✓", ft.Colors.GREEN)
-        elif self._migration is CookieMigration.LOST:
-            self._set_cookie_status(
-                "이전 버전에 저장된 쿠키를 옮기지 못했습니다 — '네이버 로그인'을 다시 해 주세요.",
-                ft.Colors.RED,
-            )
+        elif advice is not None:
+            self._set_cookie_status(advice, ft.Colors.RED)
         else:
             self._set_cookie_status("저장된 쿠키: 없음", self._muted_color)
 

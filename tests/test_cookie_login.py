@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from http.cookies import SimpleCookie
 from pathlib import Path
 from types import SimpleNamespace
@@ -369,3 +370,62 @@ def test_result_file_refuses_to_follow_a_symlink(tmp_path: Path) -> None:
         cookie_login_mod._write_result(link, "captured", [("NID_AUT", "a", ".naver.com")])
 
     assert not target.exists(), "링크 대상에 자격증명이 쓰이면 안 된다"
+
+
+def test_run_helper_writes_through_the_non_raising_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-6
+    # _write_result_safely 자체가 예외를 삼키는지는 위에서 검증했지만, run_helper가 그것을
+    # **쓰는지**는 별개다. 배선을 _write_result로 되돌리면 무증상 5분 30초 정지가 그대로
+    # 돌아오는데, 그 회귀를 잡는 것은 이 테스트뿐이다.
+    used: list[str] = []
+    monkeypatch.setattr(
+        cookie_login_mod,
+        "_write_result_safely",
+        lambda path, status, triples: used.append(status),
+    )
+    monkeypatch.setenv(_const(_HELPER_RESULT_ENV), str(tmp_path / "cookies.json"))
+
+    captured = threading.Event()
+
+    class _Signal:
+        """``events.loaded += handler`` 를 받는 최소 대역."""
+
+        def __init__(self) -> None:
+            self.handlers: list[object] = []
+
+        def __iadd__(self, handler: object) -> _Signal:
+            self.handlers.append(handler)
+            return self
+
+    class _Window:
+        def __init__(self) -> None:
+            self.events = SimpleNamespace(loaded=_Signal())
+            self.destroyed = False
+
+        def get_cookies(self) -> list[SimpleCookie]:
+            return [_simple_cookie("NID_AUT", "a", ".naver.com")]
+
+        def destroy(self) -> None:
+            self.destroyed = True
+            captured.set()
+
+    window = _Window()
+
+    def fake_start(**_kwargs: object) -> None:
+        # 실제 웹뷰가 로그인 페이지를 다 그렸을 때처럼 loaded 핸들러를 부른다.
+        for handler in window.events.loaded.handlers:
+            handler()
+        assert captured.wait(5.0), "수거 경로가 끝나지 않았다"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "webview",
+        SimpleNamespace(create_window=lambda *a, **kw: window, start=fake_start),
+    )
+
+    assert cookie_login_mod.run_helper() == 0
+
+    assert used == ["captured"], "run_helper는 예외를 삼키는 래퍼를 거쳐 기록해야 한다"
+    assert window.destroyed
