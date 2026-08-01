@@ -42,6 +42,8 @@ from pathlib import Path
 
 from _common import REPO_ROOT, fail, info
 
+from naver_post_crawler.credentials import WINDOWS_TARGETS
+
 # flet이 릴리스마다 올리는 공식 빌드 템플릿(zip). flet_cli가 쓰는 것과 같은 파일이라
 # 버전만 맞추면 기본 빌드와 동일한 결과가 나온다.
 _TEMPLATE_URL = (
@@ -57,12 +59,24 @@ _RUNNER_MAIN = Path("{{cookiecutter.out_dir}}") / "windows" / "runner" / "main.c
 # 한다. flet build는 템플릿의 내용이 아니라 경로/버전만 해시해 Flutter 프로젝트 재생성
 # 여부를 정하므로, 경로가 그대로면 패치를 고쳐도 build/flutter를 재사용해 **옛 main.cpp로
 # 조용히 빌드된다**. 경로가 달라지면 flet의 해시도 달라져 반드시 다시 생성한다.
-_PATCH_REVISION = 1
+_PATCH_REVISION = 2
 
 # -- 패치 정의 ---------------------------------------------------------------
 # 주석을 영어로 쓰는 이유: MSVC는 BOM 없는 UTF-8 소스의 비ASCII 문자에 C4819 경고를 낸다.
 _INCLUDE_ANCHOR = "#include <windows.h>\n"
-_INCLUDE_PATCH = "#include <windows.h>\n#include <wchar.h>\n"
+_INCLUDE_PATCH = (
+    "#include <windows.h>\n"
+    "#include <wchar.h>\n"
+    "#include <wincred.h>\n"
+    "\n"
+    '#pragma comment(lib, "advapi32.lib")  // CredDeleteW\n'
+)
+
+# 제거 훅이 지울 자격 증명 관리자 항목. 이름의 SSOT는 앱 쪽 credentials 모듈이다 —
+# 여기에 따로 적으면 한쪽만 바뀌었을 때 훅이 조용히 아무것도 못 지운다.
+_CRED_DELETE_LINES = "".join(
+    f'      ::CredDeleteW(L"{target}", CRED_TYPE_GENERIC, 0);\n' for target in WINDOWS_TARGETS
+)
 
 _HOOK_ANCHOR = "_In_ wchar_t *command_line, _In_ int show_command) {\n"
 _HOOK_PATCH = (
@@ -73,9 +87,20 @@ _HOOK_PATCH = (
   // waits for it to exit; otherwise it kills it and warns the user that the
   // installation only partially succeeded. Flet's Dart entrypoint treats any
   // command line argument as "developer mode" and never starts Python, so the
-  // hook can not be handled on the Python side at all. There is nothing to do
-  // for these hooks, so exit before COM and the Flutter engine start.
+  // hook can not be handled on the Python side at all. Exit before COM and the
+  // Flutter engine start.
   if (command_line != nullptr && ::wcsstr(command_line, L"--veloapp-") != nullptr) {
+    // On uninstall, drop the stored session credential. Everything else the app
+    // leaves behind (settings, logs) is harmless once the credential is gone, so
+    // nothing else is removed here: the native side does not know the data
+    // directory and must not guess it. The return value is ignored on purpose -
+    // a missing entry is not an error, and failing the hook would make the
+    // installer warn that uninstall only partially succeeded.
+    if (::wcsstr(command_line, L"--veloapp-uninstall") != nullptr) {
+"""
+    + _CRED_DELETE_LINES
+    + """\
+    }
     return EXIT_SUCCESS;
   }
 """
