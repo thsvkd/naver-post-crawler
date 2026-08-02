@@ -26,8 +26,12 @@ Windows와 macOS 산출물은 **같은 태그 하나**에 함께 올린다. Velo
     0. pyproject.toml의 [project].version(SSOT)을 미리 올려 둔다. 이전 릴리스와 같으면
        올리는 걸 잊은 것으로 보고 중단한다(Velopack은 같은 버전 재배포를 허용하지 않는다).
     1. scripts/build.py로 이 OS의 설치기를 만든다.
-    2. 릴리스 노트를 준비한다 — **사람이 쓴다**(D-10). 기본 경로는 dist/velopack/RELEASE_NOTES.md
-       이고, 이미 같은 태그의 릴리스가 있으면(두 번째 플랫폼) 노트를 넘기지 않는다.
+    2. 릴리스 노트를 준비한다. 기본 경로는 dist/velopack/RELEASE_NOTES.md 다.
+       **파일이 없을 때만** 커밋 로그로 초안을 만들어 그 파일에 써 둔다(claude -p,
+       scripts/release_notes_guide.md 지침). 릴리스는 draft로 만들어지므로 공개 전에 사람이
+       읽고 고친다 — 자동 생성은 빈 화면에서 시작하지 않게 해 줄 뿐 최종본이 아니다.
+       파일이 이미 있으면 손대지 않는다. 같은 태그의 릴리스가 이미 있으면(두 번째 플랫폼)
+       노트를 아예 넘기지 않는다.
     3. gh release로 이번 버전·이번 채널 에셋만 올린다. 기본은 **draft**다 —
        한쪽 플랫폼만 올라간 상태로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 본다.
        두 플랫폼이 다 올라간 뒤 마지막 실행에 --publish를 준다.
@@ -43,6 +47,8 @@ Windows와 macOS 산출물은 **같은 태그 하나**에 함께 올린다. Velo
 사전 준비:
     - scripts/build.py와 동일(uv, Velopack CLI, 플랫폼별 툴체인).
     - gh CLI 로그인(`gh auth login`) — 릴리스 조회·생성·업로드에 모두 쓴다.
+    - claude CLI 로그인 — 릴리스 노트 **초안 생성에만** 쓴다. 노트를 직접 써서
+      dist/velopack/RELEASE_NOTES.md 에 두면 필요 없다.
 """
 
 from __future__ import annotations
@@ -62,6 +68,8 @@ from _common import REPO_ROOT, check, fail, info, pyproject_version
 import build as build_script
 
 _VERSION_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+_GUIDE_PATH = REPO_ROOT / "scripts" / "release_notes_guide.md"
+_CLAUDE_TIMEOUT = 300  # 커밋 로그 요약이라 5분이면 충분히 여유 있다.
 
 
 def require_gh() -> None:
@@ -269,6 +277,89 @@ def release_assets(tag: str) -> list[str] | None:
         fail(f"gh release view {tag} 실패: {stderr}")
     data = json.loads(proc.stdout or "{}")
     return [asset["name"] for asset in data.get("assets", [])]
+
+
+def commit_log_since(prev_tag: str | None) -> str:
+    """prev_tag 이후(없으면 전체 히스토리) 커밋의 제목+본문을 최신순으로 모은다."""
+    rev_range = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
+    proc = subprocess.run(
+        ["git", "log", rev_range, "--no-merges", "--pretty=format:- %s%n%b%n---"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        fail(f"git log 실패: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def generate_release_notes(prev_tag: str | None, tag: str, commit_log: str) -> str:
+    """scripts/release_notes_guide.md 지침대로 ``claude -p``를 호출해 노트 초안을 만든다.
+
+    **초안일 뿐이다.** 릴리스는 어차피 draft로 만들어지므로 공개 전에 사람이 읽고 고친다.
+    노트 파일이 이미 있으면 이 함수는 호출되지 않는다 — 사람이 쓴 글을 자동 생성으로
+    덮어쓰는 일은 없어야 한다.
+
+    ``--tools ""``로 도구를 막고 ``--setting-sources ""``로 사용자 설정을 배제한다. 릴리스
+    노트를 쓰는 데 파일을 읽거나 명령을 실행할 이유가 없고, 개인 설정에 따라 결과가 달라지면
+    같은 커밋 로그로 매번 다른 노트가 나온다.
+    """
+    if shutil.which("claude") is None:
+        fail(
+            "claude CLI를 찾을 수 없습니다. https://claude.com/claude-code 를 설치·로그인하거나,\n"
+            "  릴리스 노트를 직접 작성해 dist/velopack/RELEASE_NOTES.md 에 두세요."
+        )
+    guide = _GUIDE_PATH.read_text(encoding="utf-8")
+    user_prompt = (
+        f"이전 릴리스: {prev_tag or '없음(첫 릴리스)'}\n"
+        f"이번 릴리스: {tag}\n\n"
+        f"커밋 로그:\n{commit_log}\n"
+    )
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--system-prompt",
+        guide,
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--setting-sources",
+        "",
+    ]
+    info("릴리스 노트 초안 생성 중 (claude -p)…")
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=user_prompt,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CLAUDE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        fail(f"claude -p 응답 시간 초과({_CLAUDE_TIMEOUT}초)")
+
+    data: dict | None = None
+    if proc.stdout.strip():
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            data = None
+    if proc.returncode != 0 or (data is not None and data.get("is_error")):
+        detail = (data or {}).get("result") or proc.stderr.strip() or f"종료 코드 {proc.returncode}"
+        fail(f"claude -p 실패: {detail}")
+    if data is None:
+        fail(f"claude -p 출력 파싱 실패: {proc.stdout[:500]!r}")
+
+    notes = str(data.get("result") or "").strip()
+    if not notes:
+        fail("claude -p가 빈 릴리스 노트를 반환했습니다.")
+    return notes
 
 
 @dataclass(frozen=True)
@@ -553,13 +644,19 @@ def main() -> int:
 
     notes_path = args.notes or (out_dir / build_script.RELEASE_NOTES)
     if plan.mode == "create":
-        # 릴리스 노트는 **사람이 쓴다**(D-10). 없으면 만들어 주지 않고 중단한다.
         if not notes_path.is_file():
-            fail(
-                f"릴리스 노트 파일이 없습니다: {notes_path}\n"
-                "  릴리스 노트는 사람이 작성합니다. 파일을 만든 뒤 다시 실행하거나\n"
-                "  --notes로 경로를 지정하세요."
-            )
+            # 파일이 없을 때만 초안을 만들어 **그 파일에 써 둔다**. 릴리스는 어차피 draft로
+            # 만들어지므로 공개 전에 사람이 고칠 수 있다. 파일이 있으면 손대지 않는다 —
+            # 사람이 쓴 노트를 자동 생성으로 덮어쓰는 일은 없어야 한다.
+            info(f"{prev_tag or '(첫 릴리스)'} → {tag}")
+            log = commit_log_since(prev_tag)
+            if not log:
+                fail(f"{prev_tag} 이후 커밋이 없습니다 — 릴리스할 변경사항이 없습니다.")
+            notes_path.parent.mkdir(parents=True, exist_ok=True)
+            notes_path.write_text(generate_release_notes(prev_tag, tag, log), encoding="utf-8")
+            info(f"릴리스 노트 초안 생성: {notes_path} (공개 전 검토하세요)")
+        else:
+            info(f"릴리스 노트: {notes_path}")
         info(f"GitHub 릴리스 생성/업로드: {tag}")
         check(
             create_release_command(

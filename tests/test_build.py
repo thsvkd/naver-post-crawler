@@ -595,3 +595,74 @@ def test_verify_velopack_output_rejects_wrong_channel_nupkg(tmp_path: Path, monk
 
     with pytest.raises(SystemExit):
         build.verify_velopack_output(out, "macos", "1.2.3")
+
+
+# -- Windows CRT(x64) 확보 ---------------------------------------------------------------
+
+
+def _write_pe(path: Path, machine: int) -> None:
+    """machine 값만 유효한 최소 PE 파일을 만든다(pe_machine이 읽는 두 곳만 채운다)."""
+    pe_offset = 0x80
+    data = bytearray(pe_offset + 8)
+    data[0x3C:0x40] = pe_offset.to_bytes(4, "little")
+    data[pe_offset : pe_offset + 4] = b"PE\0\0"
+    data[pe_offset + 4 : pe_offset + 6] = machine.to_bytes(2, "little")
+    path.write_bytes(bytes(data))
+
+
+def test_pe_machine_distinguishes_x64_from_x86(tmp_path: Path) -> None:
+    x64 = tmp_path / "a.dll"
+    x86 = tmp_path / "b.dll"
+    _write_pe(x64, 0x8664)
+    _write_pe(x86, 0x14C)
+
+    assert build.pe_machine(x64) == build._PE_MACHINE_AMD64
+    assert build.pe_machine(x86) != build._PE_MACHINE_AMD64
+
+
+def test_verify_vc_runtime_arch_accepts_x64_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(build, "info", lambda message: None)
+    for name in build.WINDOWS_CRT_DLLS:
+        _write_pe(tmp_path / name, 0x8664)
+
+    build.verify_vc_runtime_arch(tmp_path)  # 예외 없이 끝나야 한다.
+
+
+def test_verify_vc_runtime_arch_rejects_32bit_dll(tmp_path: Path, monkeypatch) -> None:
+    """32비트가 섞이면 앱이 python DLL을 못 읽어 창도 안 뜨고 죽는다.
+
+    빌드는 성공한 것처럼 끝나므로 실기 실행 전엔 드러나지 않는다 — 그래서 여기서 끊는다.
+    """
+    monkeypatch.setattr(build, "info", lambda message: None)
+    for name in build.WINDOWS_CRT_DLLS:
+        _write_pe(tmp_path / name, 0x8664)
+    _write_pe(tmp_path / build.WINDOWS_CRT_DLLS[-1], 0x14C)  # 하나만 32비트
+
+    with pytest.raises(SystemExit):
+        build.verify_vc_runtime_arch(tmp_path)
+
+
+def test_verify_vc_runtime_arch_rejects_missing_dll(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(build, "info", lambda message: None)
+    for name in build.WINDOWS_CRT_DLLS[:-1]:
+        _write_pe(tmp_path / name, 0x8664)
+
+    with pytest.raises(SystemExit):
+        build.verify_vc_runtime_arch(tmp_path)
+
+
+def test_redist_version_is_compared_numerically(tmp_path: Path) -> None:
+    """문자열 정렬은 14.9를 14.10보다 뒤에 놓아 최신을 잘못 고른다."""
+    base = tmp_path / "MSVC"
+    for version in ("14.9.30000", "14.10.25017"):
+        (base / version / "x64" / "Microsoft.VC143.CRT").mkdir(parents=True)
+
+    found = build.find_msvc_redist_crt_dir(base)
+
+    assert found is not None
+    assert "14.10.25017" in str(found)
+
+
+def test_missing_redist_base_returns_none(tmp_path: Path) -> None:
+    """못 찾으면 None을 돌려 기존 동작(진짜 WINDIR)으로 떨어진다 — 죽지 않는다."""
+    assert build.find_msvc_redist_crt_dir(tmp_path / "없는경로") is None

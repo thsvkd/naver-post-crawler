@@ -149,9 +149,16 @@ def test_parse_invalid_json_raises(tmp_path: Path) -> None:
         parse_cookie_file(path)
 
 
-def test_app_data_dir_uses_flet_storage_env(
+def test_app_data_dir_uses_flet_storage_env_in_development(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """``FLET_APP_STORAGE_DATA``는 **개발 편의** 분기다.
+
+    이 변수는 ``flet run``(flet_cli/commands/run.py)이 자식 프로세스에 넣어 주는 값이고
+    ``<프로젝트>/storage/data``를 가리킨다. 빌드된 배포본에는 이 변수를 세우는 코드가 없어
+    (실측: 만들어진 .app 안에 문자열 자체가 없다) **사용자 머신에서는 절대 이 경로로 가지
+    않는다** — 아래 플랫폼별 경로 테스트가 실제 배포 동작을 담는 쪽이다.
+    """
     target = tmp_path / "flet-storage"
     monkeypatch.setenv("FLET_APP_STORAGE_DATA", str(target))
     assert app_data_dir() == target
@@ -208,7 +215,7 @@ def test_app_data_dir_never_uses_exe_adjacent_storage_on_windows(
     assert not (fake_exe.parent / "storage").exists(), "설치 폴더(current)에 저장하면 안 된다"
 
 
-def test_app_data_dir_prefers_flet_storage_env_over_frozen(
+def test_app_data_dir_prefers_flet_storage_env_over_frozen_in_development(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "flet-storage"

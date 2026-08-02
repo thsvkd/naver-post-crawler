@@ -68,7 +68,9 @@ RELEASE_NOTES = "RELEASE_NOTES.md"
 # SysWOW64에는 존재할 수 없어 빌드가 죽는다(실측). 공식 MSVC redist 폴더에서 x64 DLL을
 # 모아 두고 WINDIR을 그쪽으로 돌려 해결한다 — 시스템 디렉터리는 건드리지 않는다.
 WINDOWS_CRT_DLLS = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-_MSVC_REDIST_BASE = r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC"
+
+# PE 헤더의 machine 값. 번들에 들어간 CRT가 정말 x64인지 확인하는 데 쓴다.
+_PE_MACHINE_AMD64 = 0x8664
 
 # Visual Studio C++ 빌드 도구 워크로드 식별자.
 _VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
@@ -255,13 +257,47 @@ def ensure_macos_toolchain() -> None:
     info(f"macOS 빌드 도구 확인됨: {xcode_version} ({developer_dir})")
 
 
+def vs_redist_base() -> Path | None:
+    """설치된 Visual Studio의 ``VC/Redist/MSVC`` 폴더. 찾지 못하면 ``None``.
+
+    vswhere에 묻는다. 경로를 하드코딩하면 **BuildTools 이외의 에디션**(Community·
+    Professional·Enterprise)이나 기본 위치가 아닌 설치를 전부 놓친다 — 그러면 CRT를 못 찾아
+    조용히 진짜 WINDIR로 떨어지고, 32비트 DLL이 번들에 들어간다.
+    """
+    vswhere = _vswhere_path()
+    if not vswhere.exists():
+        return None
+    result = subprocess.run(
+        [
+            str(vswhere),
+            "-products",
+            "*",
+            "-requires",
+            _VC_TOOLS_COMPONENT,
+            "-property",
+            "installationPath",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not paths:
+        return None
+    return Path(paths[0]) / "VC" / "Redist" / "MSVC"
+
+
 def find_msvc_redist_crt_dir(base: Path | None = None) -> Path | None:
     """MSVC x64 CRT redist 폴더(가장 최신 버전). 없으면 None.
 
-    ``<base>/<버전>/x64/Microsoft.VC*.CRT`` 구조에서 버전 문자열이 가장 큰 것을 고른다.
+    ``<base>/<버전>/x64/Microsoft.VC*.CRT`` 구조에서 버전이 가장 높은 것을 고른다. 버전은
+    숫자 리스트로 비교한다 — 문자열 정렬은 ``14.9``를 ``14.10``보다 뒤에 놓아 최신을 잘못
+    고른다.
+
+    ``base``를 주지 않으면 vswhere로 찾는다(:func:`vs_redist_base`). 인자로 받는 형태를
+    유지하는 이유는 이 함수가 파일시스템만 보는 순수 함수여야 테스트할 수 있기 때문이다.
     """
-    base = base or Path(_MSVC_REDIST_BASE)
-    if not base.is_dir():
+    base = base or vs_redist_base()
+    if base is None or not base.is_dir():
         return None
     candidates: list[tuple[list[int], Path]] = []
     for version_dir in base.iterdir():
@@ -291,6 +327,55 @@ def prepare_windows_crt(staging: Path, *, redist_crt_dir: Path | None) -> Path |
             fail(f"MSVC redist에 {name}이 없습니다: {redist_crt_dir}")
         shutil.copy2(source, target / name)
     return staging
+
+
+def reset_cmake_cache_if_stale(staging: Path) -> None:
+    """생성된 CMake install 스크립트가 staging을 가리키지 않으면 구성 캐시를 지운다.
+
+    ``$ENV{WINDIR}``은 **CMake 구성 시점에만** 읽힌다. 예전 WINDIR로 구성해 둔 빌드 트리가
+    남아 있으면 환경 변수를 바꿔도 옛 경로가 그대로 쓰여서, CRT를 staging에 잘 모아 두고도
+    번들에는 32비트 DLL이 들어간다(고쳤는데 안 고쳐지는 것처럼 보인다).
+
+    캐시만 지우면 CMake가 다시 구성하고 컴파일 산출물은 재사용한다 — 빌드 트리를 통째로
+    지우는 것보다 훨씬 싸다.
+    """
+    build_dir = REPO_ROOT / "build" / "flutter" / "build" / "windows" / "x64"
+    install_script = build_dir / "cmake_install.cmake"
+    if not install_script.exists():
+        return
+    if str(staging).replace("\\", "/") in install_script.read_text(
+        encoding="utf-8", errors="replace"
+    ):
+        return
+    cache = build_dir / "CMakeCache.txt"
+    if cache.exists():
+        cache.unlink()
+        info("CMake 구성 캐시 삭제(VC 런타임 경로 갱신 필요)")
+
+
+def pe_machine(path: Path) -> int:
+    """PE 헤더의 machine 값을 읽는다(0x8664=x64, 0x14C=x86)."""
+    with path.open("rb") as handle:
+        handle.seek(0x3C)
+        pe_offset = int.from_bytes(handle.read(4), "little")
+        handle.seek(pe_offset + 4)
+        return int.from_bytes(handle.read(2), "little")
+
+
+def verify_vc_runtime_arch(bundle_dir: Path) -> None:
+    """번들에 들어간 CRT가 정말 x64인지 확인한다.
+
+    32비트가 들어가면 앱이 python DLL을 못 읽어 **창도 뜨지 않고** 죽는다. 빌드는 성공한
+    것처럼 끝나므로 실기에서 실행해 보기 전엔 드러나지 않는다 — 그래서 패키징 전에 끊는다.
+    """
+    wrong = [
+        f"{name}({'없음' if not (bundle_dir / name).exists() else '32비트'})"
+        for name in WINDOWS_CRT_DLLS
+        if not (bundle_dir / name).exists() or pe_machine(bundle_dir / name) != _PE_MACHINE_AMD64
+    ]
+    if wrong:
+        fail(f"번들의 VC 런타임이 x64가 아닙니다: {', '.join(wrong)}")
+    info("번들 VC 런타임 x64 확인됨")
 
 
 def flet_version() -> str:
@@ -584,6 +669,11 @@ def main() -> int:
         if crt is not None:
             build_env["WINDIR"] = str(crt)
             info(f"CRT 스테이징: {crt} (WINDIR 재지정)")
+            # WINDIR은 CMake 구성 시점에만 읽힌다 — 옛 경로로 구성된 캐시가 남아 있으면
+            # 여기서 경로를 바꿔도 무시된다(reset_cmake_cache_if_stale 참고).
+            reset_cmake_cache_if_stale(crt)
+        else:
+            info("경고: MSVC redist를 찾지 못했습니다 — 진짜 WINDIR로 진행합니다(32비트 위험).")
 
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
@@ -595,6 +685,7 @@ def main() -> int:
     dst = stash_output(target)
     verify_artifact(dst, target)
     if target == "windows":
+        verify_vc_runtime_arch(dst)  # 서명·패키징 전에 잡아야 한다.
         # 앱 exe 서명(NPC_SIGN_* 설정 시). 미지정이면 미서명으로 계속한다.
         sign.maybe_sign_bundle(dst)
 
