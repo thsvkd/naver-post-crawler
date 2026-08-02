@@ -63,11 +63,17 @@ def test_flet_build_command_includes_template_on_windows() -> None:
     assert "windows" in cmd
 
 
-def test_flet_build_command_omits_template_on_macos() -> None:
-    # covers: Test-10 (macOS 러너는 패치하지 않는다 — 넘기면 존재하지 않는 패치를 요구하게 된다)
-    cmd = build.flet_build_command("macos", template_dir=None)
+def test_flet_build_command_includes_template_on_macos() -> None:
+    # covers: Test-10
+    """macOS도 패치된 템플릿으로 빌드한다 — 첫 창 크기(MainMenu.xib) 패치가 여기 있다.
 
-    assert "--template" not in cmd
+    예전에는 macOS 러너를 패치하지 않아 ``--template``을 뺐다. 지금은 두 러너를 모두
+    패치하므로, 빠지면 macOS 앱이 800x600으로 떴다가 앱 크기로 줄어드는 깜빡임이 돌아온다.
+    """
+    cmd = build.flet_build_command("macos", template_dir=Path("/tmp/tpl"))
+
+    assert "--template" in cmd
+    assert str(Path("/tmp/tpl")) in cmd
     assert "macos" in cmd
 
 
@@ -431,3 +437,161 @@ def test_find_msvc_redist_crt_dir_picks_newest_x64(tmp_path: Path) -> None:
     assert found is not None
     assert "14.44.35112" in str(found)
     assert found.name == "Microsoft.VC143.CRT"
+
+
+# -- macOS 사전 점검 ---------------------------------------------------------------------
+# CLT만 깔린 맥에서 실제로 나온 출력(yt-knowledge-extractor에서 실측).
+_CLT_DIR = "/Library/Developer/CommandLineTools"
+_XCODEBUILD_CLT_ERROR = (
+    "xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer "
+    f"directory '{_CLT_DIR}' is a command line tools instance"
+)
+_XCODE_DIR = "/Applications/Xcode.app/Contents/Developer"
+_XCODEBUILD_OK = "Xcode 16.2\nBuild version 16C5032a"
+
+
+def _fake_macos_env(monkeypatch, *, developer_dir: str, xcodebuild_ok: bool, tools: set) -> None:
+    """지정한 맥 환경을 흉내 내도록 subprocess.run / shutil.which를 갈아 끼운다."""
+    import subprocess as _sp
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[0] == "xcode-select":
+            return _sp.CompletedProcess(cmd, 0, developer_dir + "\n", "")
+        if cmd[0] == "xcodebuild":
+            if xcodebuild_ok:
+                return _sp.CompletedProcess(cmd, 0, _XCODEBUILD_OK, "")
+            return _sp.CompletedProcess(cmd, 1, "", _XCODEBUILD_CLT_ERROR)
+        raise AssertionError(f"예상치 못한 명령: {cmd}")
+
+    monkeypatch.setattr(build.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        build.shutil, "which", lambda tool: f"/usr/bin/{tool}" if tool in tools else None
+    )
+    monkeypatch.setattr(build, "info", lambda message: None)
+
+
+def test_macos_toolchain_rejects_command_line_tools_only(monkeypatch) -> None:
+    """CLT 전용 머신: xcode-select도 vpk용 명령도 다 통과하지만 빌드는 불가능하다.
+
+    이 구분을 놓치면 Flutter SDK를 다 받고 몇 분 지나서야 "Xcode installation is
+    incomplete"로 죽는다 — 원인이 환경 문제라는 게 한참 뒤에 드러난다.
+    """
+    _fake_macos_env(
+        monkeypatch,
+        developer_dir=_CLT_DIR,
+        xcodebuild_ok=False,
+        tools={*build._MACOS_TOOLS, "pod"},
+    )
+    with pytest.raises(SystemExit):
+        build.ensure_macos_toolchain()
+
+
+def test_macos_toolchain_rejects_missing_cocoapods(monkeypatch) -> None:
+    """전체 Xcode가 있어도 CocoaPods가 없으면 Flutter 플러그인 단계에서 죽는다."""
+    _fake_macos_env(
+        monkeypatch,
+        developer_dir=_XCODE_DIR,
+        xcodebuild_ok=True,
+        tools=set(build._MACOS_TOOLS),  # pod 없음
+    )
+    with pytest.raises(SystemExit):
+        build.ensure_macos_toolchain()
+
+
+def test_macos_toolchain_rejects_missing_velopack_tool(monkeypatch) -> None:
+    """vpk가 .pkg를 만들며 직접 부르는 명령이 하나라도 없으면 중단한다."""
+    _fake_macos_env(
+        monkeypatch,
+        developer_dir=_XCODE_DIR,
+        xcodebuild_ok=True,
+        tools={*(t for t in build._MACOS_TOOLS if t != "pkgbuild"), "pod"},
+    )
+    with pytest.raises(SystemExit):
+        build.ensure_macos_toolchain()
+
+
+def test_macos_toolchain_accepts_full_xcode_with_cocoapods(monkeypatch) -> None:
+    """정상 환경은 통과해야 한다 — 점검이 과하게 조여 빌드를 막으면 안 된다."""
+    _fake_macos_env(
+        monkeypatch,
+        developer_dir=_XCODE_DIR,
+        xcodebuild_ok=True,
+        tools={*build._MACOS_TOOLS, "pod"},
+    )
+    build.ensure_macos_toolchain()  # 예외 없이 끝나야 한다.
+
+
+# -- 산출물 이름 검증 --------------------------------------------------------------------
+
+
+def test_nupkg_glob_omits_channel_suffix_only_on_windows() -> None:
+    """win/osx 글롭은 서로의 파일을 절대 매치하면 안 된다.
+
+    두 OS 산출물을 같은 태그에 올리므로, 이름이 겹치면 나중에 올린 쪽이 앞선 것을 덮어쓴다.
+    Velopack이 접미사를 빼는 조합은 Windows 타깃 + win 채널뿐이다.
+    """
+    assert build.full_nupkg_glob("windows", "1.2.3") == "*-1.2.3-full.nupkg"
+    assert build.full_nupkg_glob("macos", "1.2.3") == "*-1.2.3-osx-full.nupkg"
+
+    import fnmatch
+
+    win_file = "NaverPostCrawler-1.2.3-full.nupkg"
+    osx_file = "NaverPostCrawler-1.2.3-osx-full.nupkg"
+    assert not fnmatch.fnmatch(osx_file, build.full_nupkg_glob("windows", "1.2.3"))
+    assert not fnmatch.fnmatch(win_file, build.full_nupkg_glob("macos", "1.2.3"))
+
+
+def test_feed_and_installer_names_are_per_target() -> None:
+    assert build.releases_json_name("windows") == "releases.win.json"
+    assert build.releases_json_name("macos") == "releases.osx.json"
+    assert build.setup_glob("windows") == "*-Setup.exe"
+    assert build.setup_glob("macos") == "*-Setup.pkg"
+
+
+def _write_velopack_output(out: Path, *, target: str, version: str) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    suffix = "" if target == "windows" else "-osx"
+    ext = "exe" if target == "windows" else "pkg"
+    (out / f"NaverPostCrawler{suffix}-Setup.{ext}").write_text("x", encoding="utf-8")
+    (out / f"NaverPostCrawler-{version}{suffix}-full.nupkg").write_text("x", encoding="utf-8")
+    (out / build.releases_json_name(target)).write_text("{}", encoding="utf-8")
+
+
+def test_verify_velopack_output_passes_on_complete_set(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(build, "info", lambda message: None)
+    for target in ("windows", "macos"):
+        out = tmp_path / target
+        _write_velopack_output(out, target=target, version="1.2.3")
+        build.verify_velopack_output(out, target, "1.2.3")  # 예외 없이 끝나야 한다.
+
+
+@pytest.mark.parametrize("missing", ["installer", "feed", "nupkg"])
+def test_verify_velopack_output_fails_when_a_required_file_is_missing(
+    tmp_path: Path, monkeypatch, missing: str
+) -> None:
+    """하나라도 빠지면 중단해야 한다 — 빌드 성공으로 넘어가면 업로드가 조용히 누락된다."""
+    monkeypatch.setattr(build, "info", lambda message: None)
+    out = tmp_path / "velopack"
+    _write_velopack_output(out, target="macos", version="1.2.3")
+    victim = {
+        "installer": "NaverPostCrawler-osx-Setup.pkg",
+        "feed": "releases.osx.json",
+        "nupkg": "NaverPostCrawler-1.2.3-osx-full.nupkg",
+    }[missing]
+    (out / victim).unlink()
+
+    with pytest.raises(SystemExit):
+        build.verify_velopack_output(out, "macos", "1.2.3")
+
+
+def test_verify_velopack_output_rejects_wrong_channel_nupkg(tmp_path: Path, monkeypatch) -> None:
+    """win 이름의 nupkg만 있는 폴더를 osx 빌드 결과로 통과시키면 안 된다."""
+    monkeypatch.setattr(build, "info", lambda message: None)
+    out = tmp_path / "velopack"
+    out.mkdir()
+    (out / "NaverPostCrawler-osx-Setup.pkg").write_text("x", encoding="utf-8")
+    (out / "releases.osx.json").write_text("{}", encoding="utf-8")
+    (out / "NaverPostCrawler-1.2.3-full.nupkg").write_text("x", encoding="utf-8")  # win 이름
+
+    with pytest.raises(SystemExit):
+        build.verify_velopack_output(out, "macos", "1.2.3")

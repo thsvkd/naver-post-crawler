@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import shutil
+import stat
+import subprocess
 from pathlib import Path
 
 from _common import REPO_ROOT, check, info, require_uv
@@ -25,17 +27,39 @@ exec uv run python "$(git rev-parse --show-toplevel)/scripts/test.py"
 
 
 def install_pre_commit_hook() -> None:
-    """저장소가 git 저장소면 pre-commit hook을 설치한다."""
-    git_dir = REPO_ROOT / ".git"
-    if not git_dir.exists():
+    """커밋 전 검사 hook을 설치한다. git 저장소가 아니면 조용히 건너뛴다.
+
+    hook은 git으로 공유되지 않으므로(``.git/``은 추적 대상이 아니다) 클론마다 한 번은
+    깔아야 한다. 그 한 번을 사람이 기억하게 두면 결국 누군가의 로컬에서만 게이트가 도는데,
+    그러면 게이트가 없는 것과 같다. 그래서 환경 구성에 붙였다.
+
+    hook 경로를 ``REPO_ROOT/.git``으로 계산하지 않고 ``git rev-parse --git-dir``에 묻는다.
+    **linked worktree에서는 ``.git``이 디렉터리가 아니라 실제 git 디렉터리를 가리키는
+    파일**이라, 직접 계산하면 파일 아래에 ``hooks/``를 만들려다 실패한다(worktree에서
+    작업하는 일이 잦아 실제로 걸린다).
+
+    이미 다른 내용의 hook이 있으면 덮어쓰지 않는다 — 각자 쓰던 hook을 말없이 날리면 안 된다.
+    """
+    proc = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
         return
-    info("pre-commit hook 설치")
-    hook_path = git_dir / "hooks" / "pre-commit"
-    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    hooks_dir = (REPO_ROOT / proc.stdout.strip()).resolve() / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_path = hooks_dir / "pre-commit"
+    if hook_path.exists() and hook_path.read_text(encoding="utf-8") != _PRE_COMMIT_HOOK:
+        info(f"pre-commit hook이 이미 있어 그대로 둡니다: {hook_path}")
+        return
     # Git hook은 LF 줄바꿈이어야 sh가 올바르게 해석한다(newline="\n"로 변환 방지).
+    # 없으면 Windows에서 셔뱅이 `#!/usr/bin/env bash\r`이 되어 "bash\r: not found"로 죽는다.
     hook_path.write_text(_PRE_COMMIT_HOOK, encoding="utf-8", newline="\n")
     # 실행 권한 부여(POSIX). Windows에서는 무의미하지만 무해하다.
-    hook_path.chmod(0o755)
+    hook_path.chmod(hook_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    info(f"pre-commit hook 설치: {hook_path}")
 
 
 def check_release_tooling() -> None:

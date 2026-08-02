@@ -51,12 +51,12 @@ def _populate(out: Path) -> None:
         (out / name).write_text("", encoding="utf-8")
 
 
-def test_upload_assets_are_scoped_to_version_and_channel(tmp_path: Path) -> None:
+def test_collect_assets_are_scoped_to_version_and_channel(tmp_path: Path) -> None:
     # covers: Test-32
     out = tmp_path / "velopack"
     _populate(out)
 
-    names = {p.name for p in deploy.upload_assets(out, version="0.2.0", channel="win")}
+    names = {p.name for p in deploy.collect_assets(out, "windows", "0.2.0")}
 
     assert "NaverPostCrawler-0.2.0-full.nupkg" in names
     assert "NaverPostCrawler-0.2.0-delta.nupkg" in names
@@ -69,12 +69,12 @@ def test_upload_assets_are_scoped_to_version_and_channel(tmp_path: Path) -> None
     assert not any(n.endswith("Portable.zip") for n in names)
 
 
-def test_upload_assets_for_macos_channel(tmp_path: Path) -> None:
+def test_collect_assets_for_macos_channel(tmp_path: Path) -> None:
     # covers: Test-32
     out = tmp_path / "velopack"
     _populate(out)
 
-    names = {p.name for p in deploy.upload_assets(out, version="0.2.0", channel="osx")}
+    names = {p.name for p in deploy.collect_assets(out, "macos", "0.2.0")}
 
     assert "NaverPostCrawler-0.2.0-osx-full.nupkg" in names
     assert "releases.osx.json" in names
@@ -82,94 +82,176 @@ def test_upload_assets_for_macos_channel(tmp_path: Path) -> None:
     assert "NaverPostCrawler-0.2.0-full.nupkg" not in names, "win 채널 nupkg가 섞이면 안 된다"
 
 
-def test_upload_command_passes_explicit_v_tag() -> None:
-    # covers: Test-33
-    cmd = deploy.upload_command(
-        "vpk", version="0.2.0", channel="win", out_dir=Path("/tmp/o"), token="tok"
+@pytest.mark.parametrize(
+    "victim",
+    [
+        "NaverPostCrawler-win-Setup.exe",
+        "NaverPostCrawler-0.2.0-full.nupkg",
+        "releases.win.json",
+    ],
+)
+def test_collect_assets_rejects_an_incomplete_build(tmp_path: Path, victim: str) -> None:
+    """필수 산출물이 빠졌는데 올리면 그 플랫폼 사용자가 받을 파일이 없거나 피드가 없다."""
+    out = tmp_path / "velopack"
+    _populate(out)
+    (out / victim).unlink()
+
+    with pytest.raises(ValueError):
+        deploy.collect_assets(out, "windows", "0.2.0")
+
+
+def test_collect_assets_tolerates_a_missing_delta(tmp_path: Path) -> None:
+    """델타는 직전 릴리스가 있을 때만 생긴다 — 첫 릴리스에 없는 게 정상이다."""
+    out = tmp_path / "velopack"
+    _populate(out)
+    (out / "NaverPostCrawler-0.2.0-delta.nupkg").unlink()
+
+    names = {p.name for p in deploy.collect_assets(out, "windows", "0.2.0")}
+
+    assert "NaverPostCrawler-0.2.0-full.nupkg" in names
+
+
+def test_create_release_pins_the_tag_to_the_built_commit() -> None:
+    """태그를 방금 빌드한 커밋에 고정한다.
+
+    --target을 빼면 gh는 원격 기본 브랜치의 tip에 태그를 만든다. 그 사이 다른 커밋이 올라와
+    있으면 태그가 배포된 산출물과 다른 코드를 가리킨다. vpk upload에는 이 옵션이 없어서
+    업로드를 gh로 옮겼다.
+    """
+    cmd = deploy.create_release_command(
+        "v0.2.0",
+        [Path("/tmp/a.nupkg")],
+        notes_path=Path("/tmp/NOTES.md"),
+        head_sha="abc123",
+        publish=False,
     )
 
-    assert "--tag" in cmd
-    assert cmd[cmd.index("--tag") + 1] == "v0.2.0", (
-        "도구 기본 태그는 'v' 없는 버전이라 기존 v0.1.0 관행과 어긋난다"
-    )
-    assert cmd[cmd.index("--merge") + 1] == "true", "두 플랫폼이 같은 릴리스에 합류해야 한다"
-    assert cmd[cmd.index("--token") + 1] == "tok", "vpk는 gh 자격증명을 알아서 쓰지 않는다"
-    # vpk upload github에는 릴리스 본문을 넣는 옵션이 없다(실측: --releaseName만 있다).
-    assert "--releaseNotes" not in cmd
+    assert cmd[:4] == ["gh", "release", "create", "v0.2.0"]
+    assert cmd[cmd.index("--target") + 1] == "abc123"
+    assert cmd[cmd.index("--notes-file") + 1] == str(Path("/tmp/NOTES.md"))
 
 
-def test_upload_stays_draft_unless_publish_is_requested() -> None:
+def test_create_release_stays_draft_unless_publish_is_requested() -> None:
     # covers: Test-34 (두 플랫폼 릴리스는 한쪽만 올라간 상태로 공개되면 안 된다)
-    draft = deploy.upload_command(
-        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), token="t"
-    )
-    published = deploy.upload_command(
-        "vpk", version="0.2.0", channel="osx", out_dir=Path("/tmp/o"), token="t", publish=True
-    )
+    def build_cmd(publish: bool) -> list[str]:
+        return deploy.create_release_command(
+            "v0.2.0",
+            [Path("/tmp/a.pkg")],
+            notes_path=Path("/tmp/NOTES.md"),
+            head_sha=None,
+            publish=publish,
+        )
 
-    assert "--publish" not in draft, (
+    assert "--draft" in build_cmd(publish=False), (
         "먼저 올라간 플랫폼만으로 공개하면 다른 OS 사용자는 받을 파일이 없는 릴리스를 본다"
     )
-    assert published[published.index("--publish") + 1] == "true"
+    assert "--draft" not in build_cmd(publish=True)
 
 
-def test_release_notes_are_applied_only_on_first_platform(tmp_path: Path) -> None:
+def test_append_command_never_touches_the_release_notes() -> None:
     # covers: Test-34
-    notes = tmp_path / "RELEASE_NOTES.md"
-    notes.write_text("첫 플랫폼이 쓴 노트", encoding="utf-8")
+    """두 번째 플랫폼은 에셋만 얹는다 — 첫 플랫폼이 쓴 본문을 덮어쓰면 안 된다."""
+    cmd = deploy.append_assets_command("v0.2.0", [Path("/tmp/a.pkg"), Path("/tmp/b.json")])
 
-    # 이미 릴리스가 있으면(두 번째 플랫폼) 본문을 건드리지 않는다 — 덮어쓰기 방지.
-    assert deploy.should_apply_notes(release_existed=True) is False
-    assert deploy.should_apply_notes(release_existed=False) is True
+    assert cmd[:4] == ["gh", "release", "upload", "v0.2.0"]
+    assert "--notes-file" not in cmd
+    assert "--notes" not in cmd
+    assert "--clobber" in cmd, "업로드가 중간에 끊겼을 때 재실행으로 복구할 수 있어야 한다"
 
-    # vpk에는 본문 옵션이 없으므로 gh로 따로 설정한다.
-    cmd = deploy.notes_command("v0.2.0", notes)
-    assert cmd[:4] == ["gh", "release", "edit", "v0.2.0"]
-    assert cmd[cmd.index("--notes-file") + 1] == str(notes)
+
+# -- 릴리스 계획(create/append 판정) ---------------------------------------------
+
+
+def _plan(**overrides):
+    kwargs = {
+        "tag": "v0.2.0",
+        "prev_tag": "v0.1.0",
+        "existing_assets": None,
+        "releases_json": "releases.win.json",
+        "force": False,
+        "tag_sha": "sha-head",
+        "head_sha": "sha-head",
+        "newest_tag": "v0.2.0",
+    }
+    kwargs.update(overrides)
+    return deploy.plan_release(**kwargs)
+
+
+def test_first_platform_creates_the_release() -> None:
+    plan = _plan(existing_assets=None)
+
+    assert plan.mode == "create"
+    assert plan.error is None
 
 
 def test_same_version_redeploy_is_blocked() -> None:
     # covers: Test-35
-    with pytest.raises(SystemExit):
-        deploy.assert_version_is_new(prev_tag="v0.2.0", tag="v0.2.0")
+    """같은 버전을 다시 올리면 업데이트 피드가 어긋나 사용자가 영영 새 버전을 못 받는다."""
+    plan = _plan(existing_assets=None, prev_tag="v0.2.0")
 
-    deploy.assert_version_is_new(prev_tag="v0.1.0", tag="v0.2.0")  # 통과한다
-    deploy.assert_version_is_new(prev_tag=None, tag="v0.2.0")  # 첫 릴리스도 통과한다
-
-
-def test_unwanted_assets_are_scoped_to_this_channel() -> None:
-    # covers: Test-32
-    # 실측: vpk upload는 outputDir의 assets.<channel>.json 인덱스를 보고 올리므로, 우리가
-    # 고른 목록과 무관하게 Portable.zip까지 올라간다(Windows에는 --noPortable이 없다).
-    # 업로드 뒤 정리해야 하는데, 다른 플랫폼이 먼저 올려 둔 에셋은 건드리면 안 된다.
-    released = [
-        "NaverPostCrawler-0.1.1-full.nupkg",
-        "NaverPostCrawler-win-Setup.exe",
-        "NaverPostCrawler-win-Portable.zip",
-        "releases.win.json",
-        "NaverPostCrawler-0.1.1-osx-full.nupkg",
-        "NaverPostCrawler-osx-Setup.pkg",
-        "releases.osx.json",
-        "RELEASES",
-    ]
-    expected = [
-        "NaverPostCrawler-0.1.1-full.nupkg",
-        "NaverPostCrawler-win-Setup.exe",
-        "releases.win.json",
-    ]
-
-    unwanted = deploy.unwanted_release_assets(released, expected=expected, channel="win")
-
-    assert unwanted == ["NaverPostCrawler-win-Portable.zip"]
+    assert plan.error is not None
 
 
-def test_unwanted_assets_never_touch_the_other_platform() -> None:
-    # covers: Test-32
-    released = ["NaverPostCrawler-osx-Setup.pkg", "releases.osx.json", "RELEASES"]
+def test_second_platform_appends_to_the_same_release() -> None:
+    """정상 흐름: 첫 플랫폼이 만든 릴리스에 내 채널 에셋만 얹는다."""
+    plan = _plan(existing_assets=["NaverPostCrawler-osx-Setup.pkg", "releases.osx.json"])
 
-    unwanted = deploy.unwanted_release_assets(released, expected=[], channel="win")
+    assert plan.mode == "append"
+    assert plan.error is None
 
-    assert unwanted == [], "osx 에셋과 레거시 인덱스는 win 실행이 지우면 안 된다"
+
+def test_redeploying_the_same_channel_is_blocked() -> None:
+    """내 채널 피드가 이미 올라가 있으면 이 플랫폼은 이미 배포된 것이다."""
+    plan = _plan(existing_assets=["releases.win.json"])
+
+    assert plan.error is not None
+
+
+def test_stale_checkout_is_blocked() -> None:
+    """과거 태그에 에셋을 붙이면 정작 latest에는 그 OS 설치기가 영영 없다."""
+    plan = _plan(existing_assets=["releases.osx.json"], tag="v0.1.5", newest_tag="v0.2.0")
+
+    assert plan.error is not None
+
+
+def test_draft_release_counts_as_the_newest_tag() -> None:
+    """배포는 draft로 만들어진다.
+
+    최신 판정에서 draft를 빼면 두 번째 플랫폼이 정상 흐름인데도 자기가 만든 draft를 못 보고
+    "최신 릴리스가 아니다"로 막힌다 — 그래서 newest_tag는 draft를 포함해 넘긴다.
+    """
+    plan = _plan(existing_assets=["releases.osx.json"], prev_tag="v0.1.0", newest_tag="v0.2.0")
+
+    assert plan.error is None
+
+
+def test_tag_pointing_at_a_different_commit_is_blocked() -> None:
+    """아직 한 번도 릴리스된 적 없는 채널에는 다른 가드가 하나도 걸리지 않는다.
+
+    버전을 안 올린 채 HEAD에서 빌드하면 그 버전이 아닌 코드가 그 버전으로 올라간다.
+    """
+    plan = _plan(existing_assets=["releases.osx.json"], tag_sha="sha-tag", head_sha="sha-head")
+
+    assert plan.error is not None
+
+
+def test_unverifiable_commit_is_blocked() -> None:
+    """대조할 수 없으면 통과시키지 않는다 — 모르는 채 올리는 것이 막으려는 사고다."""
+    assert _plan(existing_assets=["releases.osx.json"], tag_sha=None).error is not None
+    assert _plan(existing_assets=["releases.osx.json"], head_sha=None).error is not None
+
+
+def test_force_bypasses_every_release_gate() -> None:
+    plan = _plan(
+        existing_assets=["releases.win.json"],
+        tag="v0.1.5",
+        newest_tag="v0.2.0",
+        tag_sha="sha-tag",
+        force=True,
+    )
+
+    assert plan.mode == "append"
+    assert plan.error is None
 
 
 # -- 배포 전 저장소 상태 게이트 -------------------------------------------------

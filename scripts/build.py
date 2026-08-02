@@ -19,7 +19,7 @@
 
 사전 준비:
     - Windows: Visual Studio "Desktop development with C++" 워크로드(없으면 안내).
-    - macOS: Xcode 명령행 도구.
+    - macOS: **전체 Xcode** + CocoaPods(Command Line Tools만으로는 안 된다 — 없으면 안내).
     - 공통: Velopack CLI(``dotnet tool install -g vpk``). Flutter SDK는 flet build가 받아 온다.
 
 (개발 중 빠른 실행은 'python scripts/run.py --gui')
@@ -57,8 +57,10 @@ APP_EXE_WINDOWS = "naver-post-crawler.exe"
 # Windows와 macOS 산출물을 같은 GitHub 릴리스 태그에 함께 올려도 파일명이 겹치지 않는 이유다.
 _CHANNELS = {"windows": "win", "macos": "osx"}
 
-# 사람이 작성하는 릴리스 노트 파일 이름(Velopack 산출물이 아니라 빌드가 지우지 않는다).
-_RELEASE_NOTES = "RELEASE_NOTES.md"
+# 사람이 작성하는 릴리스 노트 파일 이름. Velopack 산출물이 아니므로 빌드가 산출 폴더를
+# 비울 때 **이 이름만 남긴다**. deploy.py가 읽는 이름과 반드시 같아야 해서 여기서만
+# 정의하고 deploy.py는 이 값을 가져다 쓴다(따로 적으면 어긋난 순간 노트가 지워진다).
+RELEASE_NOTES = "RELEASE_NOTES.md"
 
 # serious_python_windows 플러그인이 번들에 넣는 CRT DLL. 그 플러그인의 CMakeLists가
 # ``$ENV{WINDIR}/System32``에서 가져오는데, Visual Studio가 주는 cmake.exe가 32비트라
@@ -95,6 +97,60 @@ def channel_for(target: str) -> str:
 def current_target() -> str:
     """현재 OS의 빌드 타깃."""
     return target_for(platform.system())
+
+
+# -- 산출물 이름 규약(build와 deploy의 단일 소스) ------------------------------
+# Velopack이 nupkg 이름에서 채널 접미사를 빼는 유일한 조합은 **Windows 타깃 + win 채널**
+# 이다. vpk 1.2.0의 DefaultName.GetSuggestedReleaseName을 역컴파일해 확인한 규칙이며,
+# 그 밖에는 호스트 OS와 무관하게 항상 ``-<채널>``이 붙는다("채널이 그 OS의 기본 채널이면
+# 뺀다"가 아니다 — macOS/osx 조합에는 그 면제가 적용되지 않는다).
+#
+# 실측(macOS 호스트, vpk 1.2.0): --channel osx → *-<ver>-osx-full.nupkg (접미사 유지).
+# 실측(Windows 호스트): 실제 배포된 에셋이 *-<ver>-full.nupkg (접미사 없음).
+_NO_CHANNEL_SUFFIX_TARGET = "windows"
+
+
+def setup_glob(target: str) -> str:
+    """설치기 파일 글롭. Windows는 .exe, macOS는 .pkg다."""
+    return "*-Setup.exe" if target == "windows" else "*-Setup.pkg"
+
+
+def releases_json_name(target: str) -> str:
+    """업데이트 피드 파일 이름. 앱의 GithubSource가 **이름 완전 일치**로만 찾는다."""
+    return f"releases.{channel_for(target)}.json"
+
+
+def full_nupkg_glob(target: str, version: str) -> str:
+    """이번 버전 전체 업데이트 패키지 글롭(위 접미사 규칙 참고)."""
+    suffix = "" if target == _NO_CHANNEL_SUFFIX_TARGET else f"-{channel_for(target)}"
+    return f"*-{version}{suffix}-full.nupkg"
+
+
+def verify_velopack_output(out: Path, target: str, version: str) -> None:
+    """vpk가 **기대한 이름 그대로** 산출물을 냈는지 확인한다.
+
+    이름이 조금이라도 다르면 빌드는 성공한 것처럼 보이는데 deploy.py가 파일을 못 찾거나
+    (업로드 누락) 앱이 피드를 못 읽어 "자동 업데이트만 조용히 안 되는" 상태가 된다.
+    그래서 여기서 끊고, 실패 시 실제 파일 목록을 그대로 출력해 눈으로 고칠 수 있게 한다.
+
+    델타(*-delta.nupkg)는 첫 릴리스에 없으므로 검사하지 않는다.
+    """
+
+    def listing() -> str:
+        names = sorted(p.name for p in out.glob("*"))
+        return "\n  ".join(names) if names else "(비어 있음)"
+
+    channel = channel_for(target)
+    installer = setup_glob(target)
+    if not list(out.glob(installer)):
+        fail(f"Velopack 설치기({installer})를 찾지 못했습니다.\n{out} 실제 내용:\n  {listing()}")
+    feed = releases_json_name(target)
+    if not (out / feed).is_file():
+        fail(f"업데이트 피드 {feed}가 없습니다(채널={channel}).\n{out} 실제 내용:\n  {listing()}")
+    full = full_nupkg_glob(target, version)
+    if not list(out.glob(full)):
+        fail(f"전체 업데이트 패키지({full})를 찾지 못했습니다.\n{out} 실제 내용:\n  {listing()}")
+    info(f"Velopack 산출물 검증 통과(채널={channel}, 버전={version}).")
 
 
 # -- Windows 사전 점검 --------------------------------------------------------
@@ -134,6 +190,69 @@ def ensure_windows_toolchain() -> None:
         '    --override "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 '
         '--includeRecommended --passive"'
     )
+
+
+# -- macOS 사전 점검 ----------------------------------------------------------
+# vpk의 OsxBuildTools가 .pkg를 만들며 직접 호출하는 명령들. 전부 CLT에 들어 있다.
+_MACOS_TOOLS = ("pkgbuild", "productbuild", "ditto", "codesign", "plutil")
+_XCODE_CLT_HINT = "Xcode Command Line Tools가 필요합니다: xcode-select --install"
+# Flutter의 macOS 데스크톱 빌드는 **전체 Xcode**를 요구한다(CLT로는 안 된다).
+# 함정: CLT만 깔린 머신에서도 `xcode-select -p`는 성공하고(/Library/Developer/CommandLineTools
+# 를 출력) pkgbuild·ditto·codesign도 전부 CLT에 들어 있어 존재 확인을 통과한다. 그래서
+# 순진한 점검은 초록불을 준 뒤 Flutter SDK를 다 내려받고 몇 분 지나서야 `flet build macos`가
+# "Xcode installation is incomplete"로 죽는다(yt-knowledge-extractor에서 실제로 겪었다).
+# 그 구분이 되는 명령이 xcodebuild다 — CLT 전용 환경에서는 실행 자체가 실패한다. 그래서
+# 경로 문자열이 아니라 이 명령으로 판정한다(Xcode를 /Applications 밖에 두거나 여러 버전을
+# xcode-select로 전환하는 경우까지 맞다).
+_XCODE_FULL_HINT = (
+    "전체 Xcode가 필요합니다(Command Line Tools만으로는 macOS 앱을 빌드할 수 없습니다).\n"
+    "  1) App Store에서 Xcode를 설치한 뒤\n"
+    "  2) sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer\n"
+    "  3) sudo xcodebuild -runFirstLaunch"
+)
+# flet은 flet_desktop 등 Flutter 플러그인을 쓰고, macOS 플러그인은 CocoaPods로 엮인다.
+# 없으면 Flutter 컴파일 단계까지 간 뒤에 죽으므로 미리 잡는다.
+_COCOAPODS_HINT = (
+    "CocoaPods가 필요합니다(Flutter 플러그인을 macOS에서 엮는 데 씁니다).\n"
+    "  brew install cocoapods   (또는 sudo gem install cocoapods)"
+)
+
+
+def ensure_macos_toolchain() -> None:
+    """macOS 네이티브 빌드/패키징에 필요한 도구를 확인한다(없으면 안내 후 중단).
+
+    빌드를 시작하기 **전에** 다 확인한다 — 여기서 놓치면 Flutter SDK 다운로드와 컴파일에
+    수 분을 쓴 뒤에야 실패해서, 원인이 환경 문제였다는 게 한참 뒤에 드러난다.
+    """
+    try:
+        result = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True)
+    except OSError:  # xcode-select 자체가 없는(=CLT 미설치) 경우
+        fail(_XCODE_CLT_HINT)
+    if result.returncode != 0:
+        fail(_XCODE_CLT_HINT)
+    developer_dir = result.stdout.strip()
+
+    missing = [tool for tool in _MACOS_TOOLS if shutil.which(tool) is None]
+    if missing:
+        fail(f"{_XCODE_CLT_HINT}\n  (없는 명령: {', '.join(missing)} — vpk가 직접 호출한다)")
+
+    # 전체 Xcode 판정. CLT 전용이면 여기서 걸린다.
+    try:
+        xcodebuild = subprocess.run(["xcodebuild", "-version"], capture_output=True, text=True)
+    except OSError:
+        fail(f"{_XCODE_FULL_HINT}\n  (현재 활성 개발자 디렉터리: {developer_dir})")
+    if xcodebuild.returncode != 0:
+        fail(
+            f"{_XCODE_FULL_HINT}\n"
+            f"  (현재 활성 개발자 디렉터리: {developer_dir})\n"
+            f"  xcodebuild: {xcodebuild.stderr.strip() or xcodebuild.stdout.strip()}"
+        )
+
+    if shutil.which("pod") is None:
+        fail(_COCOAPODS_HINT)
+
+    xcode_version = xcodebuild.stdout.strip().splitlines()[0] if xcodebuild.stdout.strip() else "?"
+    info(f"macOS 빌드 도구 확인됨: {xcode_version} ({developer_dir})")
 
 
 def find_msvc_redist_crt_dir(base: Path | None = None) -> Path | None:
@@ -203,9 +322,9 @@ def flet_version() -> str:
 def flet_build_command(target: str, *, template_dir: Path | None) -> list[str]:
     """``flet build`` 실행 커맨드.
 
-    Windows에서만 패치된 템플릿을 넘긴다 — 러너 진입점에서 Velopack 훅을 처리하고 첫 창을
-    앱 크기로 만들기 위해서다(scripts/flet_template.py). macOS 러너는 패치하지 않으므로
-    ``--template``을 붙이면 존재하지 않는 패치를 요구하는 셈이 된다.
+    Windows·macOS 모두 패치된 템플릿을 넘긴다(scripts/flet_template.py). Windows는 러너
+    진입점에서 Velopack 훅을 처리하고 첫 창을 앱 크기로 만들기 위해, macOS는 첫 창 크기
+    (MainMenu.xib) 때문이다.
     """
     cmd = ["uv", "run", "--no-sync", "flet", "build", target, "--product", _PRODUCT, "--org", _ORG]
     if template_dir is not None:
@@ -423,7 +542,7 @@ def velopack_pack(
     # 바로 아래 vpk download가 GitHub에서 다시 받아 오므로 지워도 잃는 것이 없다.
     # 사람이 쓴 릴리스 노트는 vpk 산출물이 아니므로 보존한다.
     for path in out.iterdir():
-        if path.name == _RELEASE_NOTES:
+        if path.name == RELEASE_NOTES:
             continue
         shutil.rmtree(path) if path.is_dir() else path.unlink()
 
@@ -444,6 +563,8 @@ def main() -> int:
 
     if target == "windows":
         ensure_windows_toolchain()
+    elif target == "macos":
+        ensure_macos_toolchain()
 
     # pyproject.toml(SSOT)의 버전을 __init__.py에 반영한 뒤(flet build가 이 파일을 그대로
     # 복사해 번들에 담으므로 빌드 전에 최신이어야 한다) 빌드에 쓸 버전으로 쓴다.
@@ -467,7 +588,7 @@ def main() -> int:
     info("의존성 동기화 (uv sync)")
     check(["uv", "sync"])
 
-    template_dir = flet_template.prepare(flet_version()) if target == "windows" else None
+    template_dir = flet_template.prepare(flet_version())
     info(f"flet build {target}")
     check(flet_build_command(target, template_dir=template_dir), env=build_env)
 
@@ -494,6 +615,7 @@ def main() -> int:
         vpk=find_vpk(),
         out_dir=velopack_output_dir(),
     )
+    verify_velopack_output(out, target, version)
     info(f"Velopack 산출물: {out}")
     info(f"릴리스 업로드는 'python scripts/deploy.py'로 진행하세요 (태그 v{version}).")
     return 0

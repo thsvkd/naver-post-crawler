@@ -60,7 +60,21 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
+# yt-knowledge-extractor와 같은 설정을 쓴다(두 저장소의 빌드·배포 스크립트를 서로
+# 이식하므로 규칙이 갈리면 옮길 때마다 린트가 터진다).
 select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    # ProgramFiles(x86)·OneDrive 같은 이름은 Windows가 실제로 쓰는 표기다. 대문자로 바꿔도
+    # 동작은 같지만(파이썬이 Windows에서 키를 대문자로 정규화한다), 원본 표기를 유지하는
+    # 편이 무엇을 읽는지 분명하다. 지금 이 저장소에는 해당하는 코드가 없지만, 설정을
+    # 같게 두어야 스크립트를 옮겨 올 때 갈리지 않는다.
+    "SIM112",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 테스트의 중첩 with는 바깥이 mock, 안쪽이 assertRaises인 형태가 대부분이다. 하나로 합치면
+# assertRaises의 적용 범위가 넓어져 "무엇이 예외를 던져야 하는지"가 흐려진다.
+"tests/*" = ["SIM117"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

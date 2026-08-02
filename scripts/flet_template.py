@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""네이티브 러너(Windows, Flutter) 진입점 패치 — flet 빌드 템플릿을 고쳐서 쓴다.
+"""네이티브 러너(Windows·macOS, Flutter) 진입점 패치 — flet 빌드 템플릿을 고쳐서 쓴다.
 
 ``flet build``는 flet이 배포하는 cookiecutter 템플릿으로 Flutter 앱 껍데기를 만든 뒤
 빌드한다. 그 껍데기의 Windows 진입점(``windows/runner/main.cpp``)에 아래 두 가지가 빠져
@@ -25,10 +25,10 @@
    나서야 앱 크기로 줄어든다.
    → 처음부터 앱의 기본 창 크기로 만들게 한다. 크기의 SSOT는 ``src/naver_post_crawler/gui.py``다.
 
-macOS 러너는 패치하지 않는다. ``--veloapp-*`` 인자는 Velopack의 Windows 설치 경로에서만
-만들어지고, macOS는 ``.pkg``의 postinstall이 인자 없이 앱을 띄우므로 1)번 문제가 없다.
-2)번(첫 창 크기)은 macOS에도 있지만 창 정의가 코드가 아니라 ``MainMenu.xib``에 있어 별도
-패치가 필요하고, 이번 이관의 합의된 완료 범위 밖이다.
+macOS 러너에는 1)번 패치를 하지 않는다 — ``--veloapp-*`` 인자는 Velopack의 Windows 설치
+경로에서만 만들어지고, macOS는 ``.pkg``의 postinstall이 인자 없이 앱을 띄우므로 그 문제가
+없다. 2)번(첫 창 크기)은 macOS에도 있어서 함께 패치한다. 다만 창 정의가 코드가 아니라
+``MainMenu.xib``에 있어 대상 파일이 다르다(:func:`patch_macos_runner`).
 
 앵커 문자열이 정확히 한 번 나오지 않으면(= flet이 템플릿을 바꿨으면) 조용히 넘어가지 않고
 빌드를 실패시킨다. 패치가 사라진 채 배포되면 위 증상이 그대로 돌아오기 때문이다.
@@ -36,6 +36,7 @@ macOS 러너는 패치하지 않는다. ``--veloapp-*`` 인자는 Velopack의 Wi
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import urllib.error
@@ -57,12 +58,13 @@ _TEMPLATE_URL = (
 _TEMPLATE_ROOT = "build"
 # 템플릿 안에서 패치할 파일(경로에 cookiecutter 변수명이 그대로 들어간다).
 _RUNNER_MAIN = Path("{{cookiecutter.out_dir}}") / "windows" / "runner" / "main.cpp"
+_RUNNER_XIB = Path("{{cookiecutter.out_dir}}") / "macos" / "Runner" / "Base.lproj" / "MainMenu.xib"
 
 # 패치 내용이 바뀌면 이 값을 올린다. 이 값은 **캐시 디렉터리 이름에 들어간다** — 그래야
 # 한다. flet build는 템플릿의 내용이 아니라 경로/버전만 해시해 Flutter 프로젝트 재생성
 # 여부를 정하므로, 경로가 그대로면 패치를 고쳐도 build/flutter를 재사용해 **옛 main.cpp로
 # 조용히 빌드된다**. 경로가 달라지면 flet의 해시도 달라져 반드시 다시 생성한다.
-_PATCH_REVISION = 2
+_PATCH_REVISION = 3
 
 # -- 패치 정의 ---------------------------------------------------------------
 # 주석을 영어로 쓰는 이유: MSVC는 BOM 없는 UTF-8 소스의 비ASCII 문자에 C4819 경고를 낸다.
@@ -112,6 +114,18 @@ _HOOK_PATCH = (
 _SIZE_ANCHOR = "  Win32Window::Size size(1280, 720);"
 _SIZE_PATCH = "  Win32Window::Size size({width}, {height});"
 
+# macOS 첫 창 크기. xib는 창(contentRect)과 그 안의 컨텐트 뷰(frame)를 따로 적어 두고,
+# ``MainFlutterWindow.awakeFromNib()``이 ``self.frame``을 그대로 다시 세팅하므로 둘 다
+# 고쳐야 처음부터 앱 크기로 뜬다. 앵커에 ``key=``와 좌표까지 포함하는 이유: 이 파일에는
+# ``width="800" height="600"``이 두 번 나오고, 그것만으로 앵커를 잡으면 _replace_once가
+# ValueError로 빌드를 죽인다.
+_XIB_CONTENT_RECT_ANCHOR = '<rect key="contentRect" x="335" y="390" width="800" height="600"/>'
+_XIB_CONTENT_RECT_PATCH = (
+    '<rect key="contentRect" x="335" y="390" width="{width}" height="{height}"/>'
+)
+_XIB_FRAME_ANCHOR = '<rect key="frame" x="0.0" y="0.0" width="800" height="600"/>'
+_XIB_FRAME_PATCH = '<rect key="frame" x="0.0" y="0.0" width="{width}" height="{height}"/>'
+
 # GUI 기본 창 크기의 SSOT. 파이썬 모듈을 import하면 flet까지 딸려 오므로 소스에서 읽는다.
 _GUI_PATH = REPO_ROOT / "src" / "naver_post_crawler" / "gui.py"
 _SIZE_RE = re.compile(r"^_WINDOW_(WIDTH|HEIGHT)\s*=\s*(\d+)\b", re.MULTILINE)
@@ -159,23 +173,53 @@ def patch_windows_runner(text: str, *, width: int, height: int) -> str:
     return text
 
 
-def cache_dir_name(flet_version: str, *, width: int, height: int) -> str:
+def patch_macos_runner(text: str, *, width: int, height: int) -> str:
+    """macOS 러너 창 정의(``MainMenu.xib``)에 첫 창 크기 패치를 적용한 결과를 돌려준다.
+
+    Velopack 훅 패치는 하지 않는다 — macOS 설치는 인자 없이 앱을 띄운다(모듈 docstring 참고).
+
+    Raises:
+        ValueError: 기준 문자열이 정확히 한 번 나오지 않을 때(템플릿 구조 변경).
+    """
+    text = _replace_once(
+        text,
+        _XIB_CONTENT_RECT_ANCHOR,
+        _XIB_CONTENT_RECT_PATCH.format(width=width, height=height),
+        "macOS 첫 창 contentRect",
+    )
+    text = _replace_once(
+        text,
+        _XIB_FRAME_ANCHOR,
+        _XIB_FRAME_PATCH.format(width=width, height=height),
+        "macOS 첫 창 frame",
+    )
+    return text
+
+
+def cache_dir_name(
+    flet_version: str, *, width: int, height: int, targets: tuple[str, ...] = WINDOWS_TARGETS
+) -> str:
     """패치된 템플릿을 캐시할 디렉터리 이름.
 
-    flet 버전뿐 아니라 **패치 리비전과 창 크기까지** 이름에 넣는다. flet은 템플릿의 내용이
-    아니라 경로/버전만 해시해 Flutter 프로젝트 재생성 여부를 정하므로, 경로가 그대로면
-    패치를 고쳐도 옛 결과물로 조용히 빌드된다(:data:`_PATCH_REVISION` 주석 참고).
+    flet 버전뿐 아니라 **패치 리비전·창 크기·자격 증명 항목 이름까지** 이름에 넣는다. flet은
+    템플릿의 내용이 아니라 경로/버전만 해시해 Flutter 프로젝트 재생성 여부를 정하므로, 경로가
+    그대로면 패치를 고쳐도 옛 결과물로 조용히 빌드된다(:data:`_PATCH_REVISION` 주석 참고).
+
+    항목 이름까지 넣는 이유: ``credentials.py``의 SERVICE/ACCOUNT를 바꾸면 main.cpp에 박히는
+    값이 달라지는데, 리비전을 올리는 걸 잊으면 **옛 이름을 지우는 제거 훅이 그대로 배포된다**.
+    그건 아무것도 지우지 않고 조용히 성공하므로 실기로 제거해 보기 전엔 드러나지 않는다.
     """
-    return f"{flet_version}-r{_PATCH_REVISION}-{width}x{height}"
+    digest = hashlib.sha256("|".join(targets).encode("utf-8")).hexdigest()[:8]
+    return f"{flet_version}-r{_PATCH_REVISION}-{width}x{height}-{digest}"
 
 
-def cache_stamp_key(*, width: int, height: int) -> str:
+def cache_stamp_key(*, width: int, height: int, targets: tuple[str, ...] = WINDOWS_TARGETS) -> str:
     """캐시 디렉터리 안에 남기는 스탬프 값.
 
     :func:`cache_dir_name`과 **같은 입력에 함께 반응해야 한다**. 한쪽만 반응하면 캐시가
     "맞다"고 판정해 패치가 빠진 템플릿을 그대로 재사용한다.
     """
-    return f"{_PATCH_REVISION}|{width}x{height}"
+    return f"{_PATCH_REVISION}|{width}x{height}|{'|'.join(targets)}"
 
 
 def _download(url: str, dest: Path) -> None:
@@ -194,7 +238,6 @@ def prepare(flet_version: str) -> Path:
 
     ``flet build --template <반환값>``으로 넘긴다. 결과물은 ``build/`` 아래(빌드 산출물,
     git 무시)에 flet 버전별로 캐시되며, 패치 내용이나 창 크기가 바뀌면 다시 만든다.
-    Windows 빌드에서만 쓴다(모듈 docstring 참고).
     """
     width, height = window_size()
     base = REPO_ROOT / "build" / "_flet_template"
@@ -220,17 +263,32 @@ def prepare(flet_version: str) -> Path:
     with zipfile.ZipFile(archive) as zf:
         zf.extractall(root)
 
+    # 캐시 트리는 OS별로 나누지 않고 하나만 만든다(캐시 키가 단순해야 위 스탬프 검사를
+    # 믿을 수 있다). 그래서 실행 중인 OS와 무관하게 두 러너를 모두 패치한다 — 안 쓰는 쪽
+    # 패치는 그 OS 빌드에서 무시될 뿐이고, 대신 템플릿이 바뀌면 어느 OS에서 빌드하든 즉시
+    # 드러난다.
+    #
+    # 의도된 트레이드오프이자 **감수하는 비용**: 이 때문에 macOS 템플릿(MainMenu.xib)만
+    # 바뀌어도 Windows 빌드가 멈춘다(그 반대도 같다). 한쪽 OS에서만 조용히 패치가 빠진 채
+    # 배포되는 것보다, 양쪽 어디서 빌드하든 즉시 실패하는 편이 낫다고 보고 고른 쪽이다.
     main_cpp = root / _TEMPLATE_ROOT / _RUNNER_MAIN
     if not main_cpp.is_file():
         fail(f"템플릿에서 Windows 러너 진입점을 찾지 못했습니다: {main_cpp}")
+    xib = root / _TEMPLATE_ROOT / _RUNNER_XIB
+    if not xib.is_file():
+        fail(f"템플릿에서 macOS 러너 창 정의를 찾지 못했습니다: {xib}")
     try:
-        patched = patch_windows_runner(
+        patched_main = patch_windows_runner(
             main_cpp.read_text(encoding="utf-8"), width=width, height=height
+        )
+        patched_xib = patch_macos_runner(
+            xib.read_text(encoding="utf-8"), width=width, height=height
         )
     except ValueError as exc:
         fail(str(exc))
-    main_cpp.write_text(patched, encoding="utf-8")
+    main_cpp.write_text(patched_main, encoding="utf-8")
+    xib.write_text(patched_xib, encoding="utf-8")
 
     stamp.write_text(key, encoding="utf-8")
-    info(f"Windows 러너 패치 완료(Velopack 훅 처리 + 첫 창 {width}x{height}): {template_dir}")
+    info(f"러너 패치 완료(Velopack 훅 처리 + 첫 창 {width}x{height}): {template_dir}")
     return template_dir

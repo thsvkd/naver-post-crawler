@@ -184,3 +184,83 @@ def test_cache_stamp_key_moves_with_cache_dir_name(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(flet_template, "_PATCH_REVISION", flet_template._PATCH_REVISION + 1)
     assert key != flet_template.cache_stamp_key(width=_WIDTH, height=_HEIGHT)
+
+
+def test_cache_key_moves_when_credential_target_names_change() -> None:
+    """자격 증명 항목 이름이 바뀌면 캐시 키도 바뀌어야 한다.
+
+    이름은 제거 훅의 ``CredDeleteW`` 인자로 main.cpp에 박힌다. credentials.py의
+    SERVICE/ACCOUNT를 바꾸면서 _PATCH_REVISION 올리는 걸 잊으면, 캐시가 "맞다"고 판정해
+    **옛 이름을 지우는 제거 훅이 그대로 배포된다**. 그건 아무것도 지우지 않고 조용히
+    성공하므로, 실기로 제거해 보기 전엔 드러나지 않는다.
+    """
+    other = ("other-service", "other-account@other-service")
+
+    assert flet_template.cache_dir_name(
+        "0.85.1", width=_WIDTH, height=_HEIGHT
+    ) != flet_template.cache_dir_name("0.85.1", width=_WIDTH, height=_HEIGHT, targets=other)
+    assert flet_template.cache_stamp_key(
+        width=_WIDTH, height=_HEIGHT
+    ) != flet_template.cache_stamp_key(width=_WIDTH, height=_HEIGHT, targets=other)
+
+
+# -- macOS 러너(MainMenu.xib) 패치 -------------------------------------------------------
+# flet 0.85 빌드 템플릿의 macos/Runner/Base.lproj/MainMenu.xib에서 패치 관련 부분만 발췌.
+# 여기서 재현하려는 함정: `width="800" height="600"`이 **두 곳**(창의 contentRect,
+# contentView의 frame)에 똑같이 나온다. 그 부분 문자열만으로 앵커를 잡으면 두 번 매치되어
+# 패치가 엉뚱한 줄을 건드리거나 _replace_once가 빌드를 죽인다. 그래서 앵커에 `key=`와
+# 좌표까지 넣어 줄 단위로 유일하게 만든다 — 이 픽스처가 그 유일성을 고정한다.
+_TEMPLATE_MAIN_MENU_XIB = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.XIB" version="3.0">
+    <objects>
+        <window title="APP" id="QvC-M9-y7g" customClass="MainFlutterWindow">
+            <rect key="contentRect" x="335" y="390" width="800" height="600"/>
+            <rect key="screenRect" x="0.0" y="0.0" width="2560" height="1577"/>
+            <view key="contentView" wantsLayer="YES" id="EiT-Mj-1SZ">
+                <rect key="frame" x="0.0" y="0.0" width="800" height="600"/>
+            </view>
+        </window>
+    </objects>
+</document>
+"""
+
+
+def test_naive_size_anchor_would_be_ambiguous() -> None:
+    """앵커를 좌표 없이 크기만으로 잡으면 안 되는 이유를 픽스처가 실제로 담고 있는지."""
+    assert _TEMPLATE_MAIN_MENU_XIB.count('width="800" height="600"') == 2
+
+
+def test_macos_runner_patch_sets_both_rects() -> None:
+    """창(contentRect)과 컨텐트 뷰(frame)를 둘 다 고쳐야 처음부터 앱 크기로 뜬다.
+
+    ``MainFlutterWindow.awakeFromNib()``이 ``self.frame``을 그대로 다시 세팅하므로
+    한쪽만 고치면 창이 여전히 800x600으로 먼저 보인다.
+    """
+    patched = flet_template.patch_macos_runner(
+        _TEMPLATE_MAIN_MENU_XIB, width=_WIDTH, height=_HEIGHT
+    )
+
+    assert f'key="contentRect" x="335" y="390" width="{_WIDTH}" height="{_HEIGHT}"' in patched
+    assert f'key="frame" x="0.0" y="0.0" width="{_WIDTH}" height="{_HEIGHT}"' in patched
+    # 화면 크기(screenRect)와 디코이는 건드리면 안 된다.
+    assert 'key="screenRect" x="0.0" y="0.0" width="2560" height="1577"' in patched
+    assert patched.count(f'width="{_WIDTH}" height="{_HEIGHT}"') == 2
+
+
+def test_macos_runner_patch_fails_when_anchor_is_missing() -> None:
+    """flet이 xib 구조를 바꾸면 조용히 넘어가지 말고 빌드를 세워야 한다."""
+    changed = _TEMPLATE_MAIN_MENU_XIB.replace('key="contentRect"', 'key="contentFrame"')
+
+    with pytest.raises(ValueError):
+        flet_template.patch_macos_runner(changed, width=_WIDTH, height=_HEIGHT)
+
+
+def test_macos_runner_patch_is_not_idempotent_by_design() -> None:
+    """이미 패치된 xib를 다시 패치하면 실패해야 한다(앵커가 사라졌다는 뜻)."""
+    patched = flet_template.patch_macos_runner(
+        _TEMPLATE_MAIN_MENU_XIB, width=_WIDTH, height=_HEIGHT
+    )
+
+    with pytest.raises(ValueError):
+        flet_template.patch_macos_runner(patched, width=_WIDTH, height=_HEIGHT)
