@@ -46,6 +46,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from _common import REPO_ROOT, fail, info, pyproject_version
@@ -100,6 +101,57 @@ def remote_has_commit(sha: str) -> bool:
         text=True,
     )
     return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def project_name() -> str:
+    """``pyproject.toml`` 의 ``[project].name``. uv.lock 에서 자기 항목을 찾는 데 쓴다."""
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    try:
+        return data["project"]["name"]
+    except KeyError:
+        fail("pyproject.toml에서 [project].name을 찾지 못했습니다.")
+
+
+def lockfile_version(lock_text: str, name: str) -> str | None:
+    """``uv.lock``에 적힌 **이 프로젝트 자신의** 버전. 못 찾으면 ``None``(순수 함수)."""
+    try:
+        data = tomllib.loads(lock_text)
+    except tomllib.TOMLDecodeError:
+        return None
+    for package in data.get("package", []):
+        if package.get("name") == name:
+            version = package.get("version")
+            return str(version) if version else None
+    return None
+
+
+def check_lockfile_version(
+    lock_version: str | None, project_version: str, *, force: bool
+) -> str | None:
+    """``uv.lock``이 pyproject 버전을 따라왔는지. 어긋나면 오류 메시지(순수 함수).
+
+    uv.lock은 자기 프로젝트의 버전도 기록한다. pyproject만 올려 커밋하면 락파일이 한 버전
+    뒤처지고, 그 상태로 배포하면 build.py의 ``uv sync``가 **배포 도중에** 락파일을 고쳐 워킹
+    트리를 더럽힌다. 그 시점은 :func:`check_worktree_clean`을 이미 통과한 뒤라 이번 배포는
+    그대로 나가고, **다음 배포가 영문 모를 "커밋되지 않은 변경"으로 막힌다**
+    (yt-knowledge-extractor의 v0.1.5 Windows 배포에서 실제로 겪었다).
+
+    그래서 빌드 전에 여기서 끊고 무엇을 하면 되는지 알려 준다.
+    """
+    if force:
+        return None
+    if lock_version is None:
+        return (
+            "uv.lock에서 이 프로젝트의 버전을 읽지 못했습니다. 락파일이 깨졌는지 확인하세요"
+            "(정말 강행하려면 --force)."
+        )
+    if lock_version != project_version:
+        return (
+            f"uv.lock의 버전({lock_version})이 pyproject.toml({project_version})과 다릅니다.\n"
+            "  uv lock을 돌려 락파일을 맞추고 함께 커밋한 뒤 다시 실행하세요.\n"
+            "  (그대로 두면 빌드 중 uv sync가 락파일을 고쳐 워킹 트리가 더러워집니다.)"
+        )
+    return None
 
 
 def check_worktree_clean(porcelain_status: str | None, *, force: bool) -> str | None:
@@ -366,10 +418,21 @@ def main() -> int:
     args = parser.parse_args()
 
     require_gh()
+    version = pyproject_version()
 
-    # --dry-run은 빌드도 업로드도 하지 않으므로 아래 두 가드를 건너뛴다 — 무엇이 올라갈지만
+    # --dry-run은 빌드도 업로드도 하지 않으므로 아래 가드를 건너뛴다 — 무엇이 올라갈지만
     # 보려는 것뿐인데 커밋을 강요하면 쓸모가 없다.
     if not args.dry_run:
+        lock_path = REPO_ROOT / "uv.lock"
+        error = check_lockfile_version(
+            lockfile_version(lock_path.read_text(encoding="utf-8"), project_name())
+            if lock_path.is_file()
+            else None,
+            version,
+            force=args.force,
+        )
+        if error:
+            fail(error)
         error = check_worktree_clean(worktree_status(), force=args.force)
         if error:
             fail(error)
@@ -381,7 +444,6 @@ def main() -> int:
         )
         if error:
             fail(error)
-    version = pyproject_version()
     tag = f"v{version}"
     target = build_script.current_target()
     channel = build_script.channel_for(target)

@@ -222,3 +222,54 @@ def test_unknown_head_is_blocked() -> None:
 
 def test_force_bypasses_push_gate() -> None:
     assert deploy.check_head_pushed("abc1234", remote_has_head=False, force=True) is None
+
+
+# -- uv.lock 버전 게이트 --------------------------------------------------------
+# uv.lock은 자기 프로젝트의 버전도 기록한다. pyproject만 올려 커밋하면 락파일이 뒤처지고,
+# 그 상태로 배포하면 build.py의 `uv sync`가 배포 도중에 락파일을 고쳐 워킹 트리를 더럽힌다.
+# 그 시점은 위의 워킹 트리 게이트를 이미 통과한 뒤라 이번 배포는 나가고, 다음 배포가 영문
+# 모를 "커밋되지 않은 변경"으로 막힌다.
+
+_LOCK = """
+version = 1
+
+[[package]]
+name = "some-dependency"
+version = "9.9.9"
+
+[[package]]
+name = "naver-post-crawler"
+version = "0.1.2"
+source = { editable = "." }
+"""
+
+
+def test_lockfile_version_reads_own_entry_not_a_dependency() -> None:
+    assert deploy.lockfile_version(_LOCK, "naver-post-crawler") == "0.1.2"
+
+
+def test_lockfile_version_missing_package() -> None:
+    assert deploy.lockfile_version(_LOCK, "not-in-lock") is None
+
+
+def test_lockfile_version_broken_toml() -> None:
+    assert deploy.lockfile_version("this is not toml {{{", "x") is None
+
+
+def test_matching_lockfile_passes() -> None:
+    assert deploy.check_lockfile_version("0.1.2", "0.1.2", force=False) is None
+
+
+def test_stale_lockfile_is_blocked() -> None:
+    error = deploy.check_lockfile_version("0.1.1", "0.1.2", force=False)
+
+    assert error is not None
+    assert "uv lock" in error
+
+
+def test_unreadable_lockfile_is_blocked() -> None:
+    assert deploy.check_lockfile_version(None, "0.1.2", force=False) is not None
+
+
+def test_force_bypasses_lockfile_gate() -> None:
+    assert deploy.check_lockfile_version("0.1.1", "0.1.2", force=True) is None
