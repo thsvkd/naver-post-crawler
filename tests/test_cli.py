@@ -142,3 +142,17 @@ def test_cli_reports_a_leftover_plaintext_file(monkeypatch: pytest.MonkeyPatch) 
     compact = "".join(result.output.split())
     assert "직접삭제해주세요" in compact
     assert "cafe_cookie.txt" in compact, "어느 파일을 지워야 하는지 알려야 한다"
+
+
+def test_leftover_path_survives_rich_markup(monkeypatch: pytest.MonkeyPatch) -> None:
+    # covers: cred/Test-12b
+    # 안내를 f-string으로 마크업에 두르면 rich가 경로의 대괄호를 태그로 해석해 조용히
+    # 지운다(예외도 없다). 지워야 할 경로를 정확히 알리는 것이 이 문구의 존재 이유다.
+    bracketed = Path("/tmp/te[st]/cafe_cookie.txt")
+    result_obj = MigrationResult(CookieMigration.MOVED, exposed=True, path=bracketed)
+    monkeypatch.setattr(cli_mod, "migrate_legacy_cookie", lambda: result_obj)
+    monkeypatch.setattr(cli_mod, "_check_update", lambda: None)
+
+    result = CliRunner().invoke(main, ["--check-update"])
+
+    assert "te[st]" in "".join(result.output.split()), "경로의 대괄호가 사라졌다"

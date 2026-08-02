@@ -413,7 +413,11 @@ def test_run_helper_writes_through_the_non_raising_wrapper(
 
     window = _Window()
 
-    def fake_start(**_kwargs: object) -> None:
+    def fake_start(**kwargs: object) -> None:
+        # private_mode를 떼면 웹뷰 엔진이 로그인 세션을 자기 프로필 저장소에 영구 기록한다.
+        # 우리가 만들지도 지우지도 권한을 통제하지도 않는 위치라, 좁혀 놓은 결과 파일 옆에
+        # 훨씬 오래 남는 두 번째 사본이 조용히 생긴다.
+        assert kwargs.get("private_mode") is True, "로그인 세션을 디스크에 남기면 안 된다"
         # 실제 웹뷰가 로그인 페이지를 다 그렸을 때처럼 loaded 핸들러를 부른다.
         for handler in window.events.loaded.handlers:
             handler()

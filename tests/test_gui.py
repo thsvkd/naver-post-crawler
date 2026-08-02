@@ -753,3 +753,24 @@ def test_successful_login_routes_through_the_status_refresh(
     gui._run_cookie_login()
 
     assert seen and seen[0] is not None, "성공 문구도 상태 판정을 거쳐야 한다"
+
+
+def test_stale_loss_notice_disappears_after_a_successful_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # covers: cred/Test-12b
+    # 노출+손실 상태에서 재로그인에 성공했는데도 "로그인도 풀렸습니다"가 그대로 나오면,
+    # 이미 한 일을 다시 하라는 말이 되어 사용자는 로그인이 안 먹은 줄 안다.
+    leftover = tmp_path / "cafe_cookie.txt"
+    leftover.write_text("NID_AUT=a", encoding="utf-8")
+    gui, calls = _cookie_status_gui(
+        monkeypatch, _result(CookieMigration.LOST, exposed=True, path=leftover)
+    )
+    monkeypatch.setattr(gui_mod, "load_cookie", lambda: "NID_AUT=new")
+
+    gui._refresh_cookie_status()
+
+    message = calls[-1][0]
+    assert calls[-1][1] == ft.Colors.RED, "평문은 아직 남아 있으므로 경고는 유지된다"
+    assert "풀렸습니다" not in message, "방금 로그인했는데 로그인이 풀렸다고 하면 안 된다"
+    assert str(leftover) in message, "지워야 할 파일은 계속 알려야 한다"

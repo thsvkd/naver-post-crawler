@@ -27,6 +27,7 @@ from .cafe_client import NaverCafeClient
 from .cafe_ref import is_cafe_reference, resolve_cafe_reference
 from .client import NaverBlogClient
 from .cookie import (
+    CookieMigration,
     app_data_dir,
     load_cookie,
     migrate_legacy_cookie,
@@ -432,13 +433,20 @@ class CrawlerGUI:
         if result.exposed and not result.path.exists():
             # 사용자가 직접 지웠다. 더 이상 노출이 아니다.
             result = replace(result, exposed=False)
+        stored = success is not None or load_cookie() is not None
+        if stored and result.outcome is CookieMigration.LOST:
+            # 방금 저장에 성공했다면 "로그인이 풀렸다"는 더 이상 사실이 아니다. 낡은 문구가
+            # 이미 한 일을 다시 하라고 시키면 사용자는 로그인이 안 먹은 줄 안다.
+            result = replace(result, outcome=CookieMigration.NOTHING)
         advice = migration_advice(result)
 
         if result.exposed:
-            self._set_cookie_status(advice or "", ft.Colors.RED)
+            # exposed면 migration_advice는 항상 문구를 돌려준다(빈 화면이 나올 수 없다).
+            assert advice is not None
+            self._set_cookie_status(advice, ft.Colors.RED)
         elif success is not None:
             self._set_cookie_status(success, ft.Colors.GREEN)
-        elif load_cookie() is not None:
+        elif stored:
             self._set_cookie_status("저장된 쿠키: 있음 ✓", ft.Colors.GREEN)
         elif advice is not None:
             self._set_cookie_status(advice, ft.Colors.RED)

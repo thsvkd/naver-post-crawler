@@ -170,7 +170,11 @@ def main(
     # 콘솔로 알린다. 알리지 않으면 갑자기 로그아웃된 이유를 알 방법이 없다.
     advice = migration_advice(migrate_legacy_cookie())
     if advice is not None:
-        console.print(f"[yellow]{advice}[/yellow]")
+        # markup=False가 핵심이다. rich는 **인자 문자열 안의** 대괄호도 태그로 해석하므로,
+        # style= 로 색을 옮기는 것만으로는 안내에 실린 경로의 대괄호가 그대로 사라진다
+        # (예외도 나지 않는다). 이 문구의 존재 이유가 지워야 할 경로를 정확히 알리는 것이라
+        # 경로가 틀리게 나오면 목적이 무너진다.
+        console.print(advice, style="yellow", markup=False)
 
     # --check-update: 최신 릴리스만 확인하고 종료한다(TARGET 불필요). 네트워크 오류는
     # 트레이스백 대신 경고로 삼켜 크롤링 없이 조용히 끝낸다.
